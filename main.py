@@ -1,8 +1,11 @@
 import asyncio
 import argparse
 import logging
+from dotenv import load_dotenv
 from exchange_manager import BinanceManager
 from analyzer import MarketAnalyzer
+from telegram_notifier import TelegramNotifier
+from models import Signal
 
 # Production Logging Configuration
 logging.basicConfig(
@@ -12,6 +15,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingBot")
 
+# Load secrets from .env before reading config
+load_dotenv()
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PAXG Trading Signal Bot")
@@ -20,6 +26,17 @@ def parse_args():
                         help="Candle timeframe: 1m, 5m, 15m, 1h, 4h, 1d (default: 1h)")
     return parser.parse_args()
 
+def build_signal_summary(symbol: str, timeframe: str, signal: Signal, support: float, resistance: float, current_price: float) -> str:
+    return "\n".join([
+        "PAXG Trading Signal",
+        f"Symbol: {symbol} | Timeframe: {timeframe}",
+        f"Action: {signal.action}",
+        f"Position: {signal.position} | Pattern: {signal.pattern or 'NONE'}",
+        f"Support: ${support:.2f} | Resistance: ${resistance:.2f}",
+        f"Last Close: ${signal.price:.2f} | Live Price: ${current_price:.2f}",
+        f"Reason: {signal.reason}",
+    ])
+
 async def main():
     args = parse_args()
     symbol = args.symbol
@@ -27,6 +44,7 @@ async def main():
     
     logger.info(f"🚀 Starting Analysis for {symbol}...")
 
+    notifier = TelegramNotifier.from_env()
     exchange = BinanceManager()
     try:
         # 1. Data Acquisition
@@ -68,8 +86,16 @@ async def main():
         logger.info(f"Reason: {signal.reason}")
         logger.info("-----------------------")
 
+        # 5. Telegram Notification
+        if notifier is not None:
+            await notifier.send_message(
+                build_signal_summary(symbol, timeframe, signal, support, resistance, current_price)
+            )
+
     except Exception as e:
         logger.critical(f"System Failure: {e}", exc_info=True)
+        if notifier is not None:
+            await notifier.send_message(f"PAXG Trading Bot failure: {e}")
     finally:
         await exchange.close()
 
