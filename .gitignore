@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime trading state (local only; never commit)
+trading_state.json
+trading_state.json.tmp

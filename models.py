@@ -21,3 +21,7 @@ class Signal(BaseModel):
     pattern: Optional[str] = None  # 'HAMMER', 'SHOOTING_STAR', 'LONG_RED', 'LONG_GREEN', None
     price: float
     reason: str
+    status: str = "NEUTRAL"
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None

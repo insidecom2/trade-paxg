@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from exchange_manager import BinanceManager
 from analyzer import MarketAnalyzer
 from telegram_notifier import TelegramNotifier
+from trading_state import TradingStateStore
 from models import Signal
 
 # Production Logging Configuration
@@ -27,15 +28,23 @@ def parse_args():
     return parser.parse_args()
 
 def build_signal_summary(symbol: str, timeframe: str, signal: Signal, support: float, resistance: float, current_price: float) -> str:
-    return "\n".join([
+    summary = [
         "PAXG Trading Signal",
         f"Symbol: {symbol} | Timeframe: {timeframe}",
         f"Action: {signal.action}",
+        f"Status: {signal.status}",
         f"Position: {signal.position} | Pattern: {signal.pattern or 'NONE'}",
         f"Support: ${support:.2f} | Resistance: ${resistance:.2f}",
         f"Last Close: ${signal.price:.2f} | Live Price: ${current_price:.2f}",
         f"Reason: {signal.reason}",
-    ])
+    ]
+    if signal.entry_price is not None:
+        summary.extend([
+            f"Entry: ${signal.entry_price:.2f}",
+            f"Stop Loss: ${signal.stop_loss:.2f}",
+            f"Take Profit: ${signal.take_profit:.2f}",
+        ])
+    return "\n".join(summary)
 
 async def main():
     args = parse_args()
@@ -49,16 +58,19 @@ async def main():
     try:
         # 1. Data Acquisition
         current_price = await exchange.fetch_current_price(symbol)
-        candles = await exchange.fetch_ohlcv(symbol, timeframe)
+        candles = await exchange.fetch_ohlcv(symbol, timeframe, limit=250)
         logger.info(f"Successfully fetched {len(candles)} candles.")
+
+        # Binance may include the currently open candle; strategy decisions use closed candles only.
+        closed_candles = candles[:-1] if len(candles) > 1 else candles
 
         # 2. Analysis
         analyzer = MarketAnalyzer()
         
         # Find SND Zones
-        snd_zones = analyzer.find_snd_zones(candles)
+        snd_zones = analyzer.find_snd_zones(closed_candles)
         # Find Support/Resistance
-        res_levels, sup_levels = analyzer.find_support_resistance(candles)
+        res_levels, sup_levels = analyzer.find_support_resistance(closed_candles)
 
         # 3. Production Logging of Results
         logger.info("--- ANALYSIS REPORT ---")
@@ -76,13 +88,28 @@ async def main():
         logger.info("-----------------------")
 
         # 4. Trading Signal (dynamic support/resistance from live data)
-        support, resistance = analyzer.find_dynamic_levels(candles, current_price)
-        signal = analyzer.generate_signal(candles, support, resistance)
+        support, resistance = analyzer.find_dynamic_levels(closed_candles, current_price)
+        state_store = TradingStateStore()
+        state_key = f"{symbol}|{timeframe}"
+        previous_state = state_store.get(state_key)
+        signal, next_state = analyzer.generate_strategy_signal(
+            closed_candles,
+            support,
+            resistance,
+            previous_state=previous_state,
+        )
+        state_store.save(state_key, next_state)
         logger.info("--- TRADING SIGNAL ---")
         logger.info(f"Timeframe: {timeframe} | Symbol: {symbol}")
         logger.info(f"Dynamic Levels: Support=${support:.2f} | Resistance=${resistance:.2f}")
+        logger.info(f"Status: {signal.status}")
         logger.info(f"Position: {signal.position} | Pattern: {signal.pattern or 'NONE'}")
         logger.info(f"Action: {signal.action} | Last Close: {signal.price:.2f} | Live Price: {current_price:.2f}")
+        if signal.entry_price is not None:
+            logger.info(
+                f"Trade Levels: Entry=${signal.entry_price:.2f} | "
+                f"SL=${signal.stop_loss:.2f} | TP=${signal.take_profit:.2f}"
+            )
         logger.info(f"Reason: {signal.reason}")
         logger.info("-----------------------")
 
