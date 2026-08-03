@@ -56,13 +56,17 @@ class MarketAnalyzer:
                 clusters.append([level])
         return [float(np.mean(c)) for c in clusters]
 
-    def find_dynamic_levels(self, candles: List[Candle], price: float, lookback: int = 30) -> Tuple[float, float]:
+    def find_dynamic_levels(self, candles: List[Candle], price: float, lookback: int = 60) -> Tuple[float, float]:
         """
         Returns the nearest support below and nearest resistance above `price`,
-        computed from the candles' real swing levels. Falls back to recent
-        lows/highs when no swing level exists in that direction.
+        computed from recent real swing levels. Falls back to recent lows/highs
+        when no swing level exists in that direction.
         """
-        res_levels, sup_levels = self.find_support_resistance(candles)
+        if not candles:
+            raise ValueError("At least one closed candle is required")
+
+        recent_candles = candles[-max(5, lookback):]
+        res_levels, sup_levels = self.find_support_resistance(recent_candles)
         supports = self._cluster_levels(sup_levels)
         resistances = self._cluster_levels(res_levels)
 
@@ -70,15 +74,34 @@ class MarketAnalyzer:
         if support is None:
             support = min(supports, default=None)
         if support is None:
-            support = min(c.low for c in candles[-lookback:])
+            support = min(c.low for c in recent_candles)
 
         resistance = min((l for l in resistances if l >= price), default=None)
         if resistance is None:
             resistance = max(resistances, default=None)
         if resistance is None:
-            resistance = max(c.high for c in candles[-lookback:])
+            resistance = max(c.high for c in recent_candles)
 
         return support, resistance
+
+    def calculate_zone_tolerance(
+        self,
+        candles: List[Candle],
+        atr_period: int = 14,
+        atr_multiplier: float = 0.75,
+        minimum: float = 0.003,
+        maximum: float = 0.015,
+    ) -> float:
+        """Returns an ATR-based percentage width for support/resistance zones."""
+        if not candles or candles[-1].close <= 0:
+            return minimum
+
+        current_atr = self.atr(candles, atr_period)
+        if current_atr is None or current_atr <= 0:
+            return minimum
+
+        atr_tolerance = atr_multiplier * current_atr / candles[-1].close
+        return min(max(minimum, atr_tolerance), maximum)
 
     def detect_candle_pattern(self, candle: Candle, avg_body: float, long_factor: float = 2.0) -> Optional[str]:
         """
@@ -127,7 +150,16 @@ class MarketAnalyzer:
         pattern = self.detect_candle_pattern(candle, avg_body, long_factor)
         position = self.classify_position(candle.close, support, resistance, tolerance)
         action, reason = self.decide_action(position, pattern, candle.close, support, resistance)
-        return Signal(action=action, position=position, pattern=pattern, price=candle.close, reason=reason)
+        volume_ratio = self.volume_ratio(candles)
+        return Signal(
+            action=action,
+            position=position,
+            pattern=pattern,
+            price=candle.close,
+            reason=reason,
+            volume_ratio=volume_ratio,
+            volume_status=self.classify_volume(volume_ratio),
+        )
 
     @staticmethod
     def _ema(values: List[float], period: int) -> Optional[float]:
@@ -166,6 +198,21 @@ class MarketAnalyzer:
         if average_volume <= 0:
             return None
         return candles[-1].volume / average_volume
+
+    @staticmethod
+    def classify_volume(
+        volume_ratio: Optional[float],
+        high_threshold: float = 1.2,
+        low_threshold: float = 0.8,
+    ) -> str:
+        """Classifies the latest volume against its recent average."""
+        if volume_ratio is None:
+            return "UNKNOWN"
+        if volume_ratio >= high_threshold:
+            return "THICK"
+        if volume_ratio < low_threshold:
+            return "THIN"
+        return "NORMAL"
 
     @staticmethod
     def atr(candles: List[Candle], period: int = 14) -> Optional[float]:
@@ -224,6 +271,7 @@ class MarketAnalyzer:
         position = self.classify_position(candle.close, support, resistance, tolerance)
         volume_ratio = self.volume_ratio(candles)
         volume_high = volume_ratio is not None and volume_ratio >= volume_multiplier
+        volume_status = self.classify_volume(volume_ratio, high_threshold=volume_multiplier)
         downtrend = self.is_downtrend(candles)
 
         state = dict(previous_state or {})
@@ -239,6 +287,8 @@ class MarketAnalyzer:
                 price=candle.close,
                 reason="Candle already processed; waiting for a new closed candle",
                 status=previous_status,
+                volume_ratio=volume_ratio,
+                volume_status=volume_status,
             )
             return signal, state
 
@@ -308,6 +358,7 @@ class MarketAnalyzer:
             next_state["breakdown_timestamp"] = state["breakdown_timestamp"]
         if volume_ratio is not None:
             next_state["volume_ratio"] = round(float(volume_ratio), 4)
+        next_state["volume_status"] = volume_status
         next_state["downtrend"] = downtrend
 
         entry_price = None
@@ -327,6 +378,8 @@ class MarketAnalyzer:
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            volume_ratio=volume_ratio,
+            volume_status=volume_status,
         )
         return signal, next_state
 
@@ -351,6 +404,7 @@ class MarketAnalyzer:
         position = self.classify_position(candle.close, support, resistance, tolerance)
         volume_ratio = self.volume_ratio(candles)
         volume_high = volume_ratio is not None and volume_ratio >= volume_multiplier
+        volume_status = self.classify_volume(volume_ratio, high_threshold=volume_multiplier)
         uptrend = self.is_uptrend(candles)
 
         state = dict(previous_state or {})
@@ -366,6 +420,8 @@ class MarketAnalyzer:
                 price=candle.close,
                 reason="Candle already processed; waiting for a new closed candle",
                 status=previous_status,
+                volume_ratio=volume_ratio,
+                volume_status=volume_status,
             )
             return signal, state
 
@@ -435,6 +491,7 @@ class MarketAnalyzer:
             next_state["breakout_timestamp"] = state["breakout_timestamp"]
         if volume_ratio is not None:
             next_state["volume_ratio"] = round(float(volume_ratio), 4)
+        next_state["volume_status"] = volume_status
         next_state["uptrend"] = uptrend
 
         entry_price = None
@@ -454,6 +511,8 @@ class MarketAnalyzer:
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
+            volume_ratio=volume_ratio,
+            volume_status=volume_status,
         )
         return signal, next_state
 

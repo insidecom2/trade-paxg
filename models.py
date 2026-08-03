@@ -25,3 +25,5 @@ class Signal(BaseModel):
     entry_price: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    volume_ratio: Optional[float] = None
+    volume_status: Optional[str] = None  # 'THICK', 'NORMAL', 'THIN', 'UNKNOWN'

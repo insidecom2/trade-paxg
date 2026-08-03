@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 
 from analyzer import MarketAnalyzer
-from main import build_signal_summary
-from models import Candle, Signal
+from main import build_signal_summary, resolve_dynamic_levels
+from models import Candle, Signal, Zone
 from trading_state import TradingStateStore
 
 
@@ -74,6 +74,8 @@ class SupportStrategyTests(unittest.TestCase):
 
         self.assertEqual(signal.status, "BREAKDOWN_CONFIRMED")
         self.assertEqual(signal.action, "SELL")
+        self.assertEqual(signal.volume_status, "THICK")
+        self.assertAlmostEqual(signal.volume_ratio, 2.0)
         self.assertEqual(state["breakdown_timestamp"], 220)
         self.assertIsNotNone(signal.entry_price)
         self.assertGreater(signal.stop_loss, signal.entry_price)
@@ -312,6 +314,8 @@ class SignalSummaryTests(unittest.TestCase):
             entry_price=390.0,
             stop_loss=400.0,
             take_profit=370.0,
+            volume_ratio=1.5,
+            volume_status="THICK",
         )
         hold_signal = Signal(
             action="HOLD",
@@ -327,7 +331,139 @@ class SignalSummaryTests(unittest.TestCase):
         self.assertIn("Entry: $390.00", trade_summary)
         self.assertIn("Stop Loss: $400.00", trade_summary)
         self.assertIn("Take Profit: $370.00", trade_summary)
+        self.assertIn("Volume: หนาแน่น (1.50x", trade_summary)
         self.assertNotIn("Entry:", hold_summary)
+
+    def test_summary_includes_analysis_report_details(self):
+        signal = Signal(
+            action="HOLD",
+            position="NEUTRAL",
+            price=4059.93,
+            reason="waiting",
+            status="BREAKOUT_WATCH",
+            volume_ratio=0.86,
+            volume_status="NORMAL",
+        )
+
+        summary = build_signal_summary(
+            "PAXG/USDT",
+            "4h",
+            signal,
+            4026.81,
+            4043.48,
+            4031.64,
+            candles_fetched=250,
+            zones=[Zone(type="DEMAND", top=4050.08, bottom=4046.40)],
+            key_resistance_levels=[4197.02, 4188.74, 4174.81],
+            key_support_levels=[3944.57, 3956.89, 3959.0],
+        )
+
+        self.assertIn("=== ANALYSIS REPORT ===", summary)
+        self.assertIn("Candles Fetched: 250", summary)
+        self.assertIn("Zone Found: DEMAND | Range: [4046.40 - 4050.08]", summary)
+        self.assertIn("Key Resistance Levels: [4197.02, 4188.74, 4174.81]", summary)
+        self.assertIn("Key Support Levels: [3944.57, 3956.89, 3959.0]", summary)
+        self.assertIn("=== TRADING SIGNAL ===", summary)
+        self.assertIn("Dynamic Levels: Support=$4026.81 | Resistance=$4043.48", summary)
+
+
+class VolumeClassificationTests(unittest.TestCase):
+    def test_volume_status_has_thick_normal_and_thin_buckets(self):
+        analyzer = MarketAnalyzer()
+
+        self.assertEqual(analyzer.classify_volume(1.2), "THICK")
+        self.assertEqual(analyzer.classify_volume(1.0), "NORMAL")
+        self.assertEqual(analyzer.classify_volume(0.79), "THIN")
+        self.assertEqual(analyzer.classify_volume(None), "UNKNOWN")
+
+
+class DynamicLevelTests(unittest.TestCase):
+    def setUp(self):
+        self.analyzer = MarketAnalyzer()
+
+    def test_dynamic_levels_use_recent_lookback_for_fallbacks(self):
+        candles = [
+            Candle(
+                timestamp=index,
+                open=index + 0.5,
+                high=index + 1.0,
+                low=float(index),
+                close=index + 0.5,
+                volume=100.0,
+            )
+            for index in range(50)
+        ]
+
+        support, resistance = self.analyzer.find_dynamic_levels(candles, price=1000.0, lookback=10)
+
+        self.assertEqual(support, 40.0)
+        self.assertEqual(resistance, 50.0)
+
+    def test_zone_tolerance_scales_with_atr(self):
+        candles = [
+            Candle(
+                timestamp=index,
+                open=100.0,
+                high=100.5,
+                low=99.5,
+                close=100.0,
+                volume=100.0,
+            )
+            for index in range(20)
+        ]
+
+        tolerance = self.analyzer.calculate_zone_tolerance(candles)
+
+        self.assertAlmostEqual(tolerance, 0.0075)
+
+    def test_levels_are_cached_until_a_new_closed_candle(self):
+        candles = [
+            Candle(
+                timestamp=index,
+                open=index + 0.5,
+                high=index + 1.0,
+                low=float(index),
+                close=index + 0.5,
+                volume=100.0,
+            )
+            for index in range(10)
+        ]
+        previous_state = {
+            "levels_timestamp": 9,
+            "support": 3.0,
+            "resistance": 7.0,
+        }
+
+        support, resistance = resolve_dynamic_levels(
+            self.analyzer,
+            candles,
+            price=5.0,
+            previous_state=previous_state,
+            lookback=10,
+        )
+
+        self.assertEqual((support, resistance), (3.0, 7.0))
+
+        candles.append(
+            Candle(
+                timestamp=10,
+                open=10.5,
+                high=11.0,
+                low=10.0,
+                close=10.5,
+                volume=100.0,
+            )
+        )
+        support, resistance = resolve_dynamic_levels(
+            self.analyzer,
+            candles,
+            price=1000.0,
+            previous_state=previous_state,
+            lookback=10,
+        )
+
+        self.assertEqual(support, 1.0)
+        self.assertEqual(resistance, 11.0)
 
 
 if __name__ == "__main__":
