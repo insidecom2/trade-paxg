@@ -4,16 +4,9 @@ import logging
 from dotenv import load_dotenv
 from exchange_manager import BinanceManager
 from analyzer import MarketAnalyzer
-from exit_profit import check_exit_profit_zone
-from exit_profit_notification import (
-    build_exit_profit_notification,
-    should_send_exit_profit_notification,
-)
 from telegram_notifier import TelegramNotifier
 from trading_state import TradingStateStore
 from models import Signal
-
-EXIT_PROFIT_TIMEFRAME = "15m"
 
 # Production Logging Configuration
 logging.basicConfig(
@@ -34,9 +27,9 @@ def parse_args():
         "--tf",
         "--timeframe",
         dest="timeframe",
-        default=EXIT_PROFIT_TIMEFRAME,
-        choices=[EXIT_PROFIT_TIMEFRAME],
-        help="Candle timeframe: 15m only",
+        default="15m",
+        choices=["1m", "5m", "15m", "1h", "4h", "1d"],
+        help="Strategy candle timeframe (default: 15m)",
     )
     return parser.parse_args()
 
@@ -148,46 +141,6 @@ async def main():
         # Binance may include the currently open candle; strategy decisions use closed candles only.
         closed_candles = candles[:-1] if len(candles) > 1 else candles
 
-        # Exit-profit analysis and the main strategy both use the same 15m
-        # closed candles.
-        exit_profit_check = check_exit_profit_zone(closed_candles)
-        logger.info(
-            "15m Candle #1: Close=%s | High=%s | Volume=%s",
-            exit_profit_check.close_1,
-            exit_profit_check.high_1,
-            exit_profit_check.volume_1,
-        )
-        logger.info(
-            "15m Candle #2: Close=%s | High=%s | Volume=%s",
-            exit_profit_check.close_2,
-            exit_profit_check.high_2,
-            exit_profit_check.volume_2,
-        )
-        logger.info(
-            "15m Exit Profit Check: Same Zone=%s",
-            exit_profit_check.same_zone,
-        )
-        logger.info(
-            "15m Resistance Check: High #1=%s | High #2=%s | "
-            "Touch Count=%d | Resistance Zone=%s-%s | Volume Change=%s%%",
-            exit_profit_check.high_1,
-            exit_profit_check.high_2,
-            exit_profit_check.touch_count,
-            exit_profit_check.resistance_zone_low,
-            exit_profit_check.resistance_zone_high,
-            (
-                f"{exit_profit_check.volume_change_percent:.1f}"
-                if exit_profit_check.volume_change_percent is not None
-                else "N/A"
-            ),
-        )
-        logger.info(
-            "15m Momentum: RSI Previous=%s | Current=%s | Momentum=%s",
-            exit_profit_check.rsi_previous,
-            exit_profit_check.rsi_current,
-            exit_profit_check.momentum,
-        )
-
         # 2. Analysis
         analyzer = MarketAnalyzer()
         state_store = TradingStateStore()
@@ -251,10 +204,6 @@ async def main():
 
         # 5. Telegram Notification
         if notifier is not None:
-            if should_send_exit_profit_notification(exit_profit_check):
-                await notifier.send_message(
-                    build_exit_profit_notification(symbol, exit_profit_check)
-                )
             await notifier.send_message(
                 build_signal_summary(
                     symbol,
