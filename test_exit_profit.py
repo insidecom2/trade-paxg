@@ -7,7 +7,10 @@ from exit_profit import (
     find_exit_profit_level,
     find_exit_profit_levels,
 )
-from exit_profit_notification import build_exit_profit_notification
+from exit_profit_notification import (
+    build_exit_profit_notification,
+    should_send_exit_profit_notification,
+)
 from models import Candle
 
 
@@ -149,6 +152,19 @@ class ExitProfitTests(unittest.TestCase):
         self.assertIn("Volume Change : -9.4%", notification)
         self.assertIn("Same Zone: YES", notification)
         self.assertIn("Exit Profit Alert: $4267.50", notification)
+
+    def test_exit_profit_notification_requires_same_zone(self):
+        inside = check_exit_profit_zone(
+            [make_candle(1, 4265.0), make_candle(2, 4265.5)],
+            zone_tolerance=0.0005,
+        )
+        outside = check_exit_profit_zone(
+            [make_candle(1, 4265.0), make_candle(2, 4275.0)],
+            zone_tolerance=0.0005,
+        )
+
+        self.assertTrue(should_send_exit_profit_notification(inside))
+        self.assertFalse(should_send_exit_profit_notification(outside))
 
     def test_rsi_momentum_is_weak_when_current_rsi_falls(self):
         candles = [make_candle(index, 100.0 + index) for index in range(15)]

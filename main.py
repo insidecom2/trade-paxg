@@ -5,7 +5,10 @@ from dotenv import load_dotenv
 from exchange_manager import BinanceManager
 from analyzer import MarketAnalyzer
 from exit_profit import check_exit_profit_zone
-from exit_profit_notification import build_exit_profit_notification
+from exit_profit_notification import (
+    build_exit_profit_notification,
+    should_send_exit_profit_notification,
+)
 from telegram_notifier import TelegramNotifier
 from trading_state import TradingStateStore
 from models import Signal
@@ -248,9 +251,10 @@ async def main():
 
         # 5. Telegram Notification
         if notifier is not None:
-            await notifier.send_message(
-                build_exit_profit_notification(symbol, exit_profit_check)
-            )
+            if should_send_exit_profit_notification(exit_profit_check):
+                await notifier.send_message(
+                    build_exit_profit_notification(symbol, exit_profit_check)
+                )
             await notifier.send_message(
                 build_signal_summary(
                     symbol,

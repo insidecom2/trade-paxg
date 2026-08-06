@@ -1,6 +1,11 @@
 from exit_profit import ExitProfitCheck
 
 
+def should_send_exit_profit_notification(check: ExitProfitCheck) -> bool:
+    """Send an exit-profit notification only when both closes share a zone."""
+    return check.same_zone
+
+
 def build_exit_profit_notification(
     symbol: str, check: ExitProfitCheck
 ) -> str:
