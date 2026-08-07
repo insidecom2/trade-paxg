@@ -1,0 +1,83 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - develop
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -s . -p 'test_*.py' -v
+
+  deploy:
+    name: Deploy to VM
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: production
+
+    # Required secrets: VM_HOST, VM_USER, VM_SSH_KEY, VM_KNOWN_HOSTS, VM_APP_PATH.
+    # VM_PORT is optional and defaults to 22.
+    env:
+      VM_HOST: ${{ secrets.VM_HOST }}
+      VM_PORT: ${{ secrets.VM_PORT }}
+      VM_USER: ${{ secrets.VM_USER }}
+      VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+      VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+      VM_APP_PATH: ${{ secrets.VM_APP_PATH }}
+
+    steps:
+      - name: Validate deployment configuration
+        run: |
+          set -eu
+          test -n "$VM_HOST"
+          test -n "$VM_USER"
+          test -n "$VM_SSH_KEY"
+          test -n "$VM_KNOWN_HOSTS"
+          test -n "$VM_APP_PATH"
+
+      - name: Configure SSH
+        run: |
+          set -eu
+          ssh_dir="$RUNNER_TEMP/deploy-ssh"
+          install -m 700 -d "$ssh_dir"
+          printf '%s\n' "$VM_SSH_KEY" > "$ssh_dir/id_ed25519"
+          printf '%s\n' "$VM_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
+
+      - name: Update checkout and start Compose
+        run: |
+          set -eu
+          ssh_dir="$RUNNER_TEMP/deploy-ssh"
+          port="${VM_PORT:-22}"
+          printf -v remote_app_path '%q' "$VM_APP_PATH"
+
+          ssh \
+            -i "$ssh_dir/id_ed25519" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -p "$port" \
+            "$VM_USER@$VM_HOST" \
+            "cd $remote_app_path && git switch master && git pull --ff-only origin master && docker compose up -d --build"

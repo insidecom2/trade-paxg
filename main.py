@@ -123,11 +123,7 @@ def resolve_dynamic_levels(
 
     return analyzer.find_dynamic_levels(candles, price, lookback=lookback)
 
-async def main():
-    args = parse_args()
-    symbol = args.symbol
-    timeframe = args.timeframe
-    
+async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
     logger.info(f"🚀 Starting Analysis for {symbol}...")
 
     notifier = TelegramNotifier.from_env()
@@ -218,13 +214,16 @@ async def main():
                     key_support_levels=sorted(sup_levels)[:3],
                 )
             )
+        return True
 
     except Exception as e:
         logger.critical(f"System Failure: {e}", exc_info=True)
         if notifier is not None:
             await notifier.send_message(f"PAXG Trading Bot failure: {e}")
+        return False
     finally:
         await exchange.close()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = parse_args()
+    asyncio.run(main(symbol=args.symbol, timeframe=args.timeframe))

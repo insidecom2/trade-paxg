@@ -1,0 +1,11 @@
+.env
+.venv/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+test_*.py
+trading_state.json
+trading_state.json.tmp
