@@ -8,3 +8,13 @@ services:
     ports:
       - "8082:80"
     restart: unless-stopped
+
+  trade-paxg-cron:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    user: root
+    command: ["/usr/sbin/cron", "-f"]
+    restart: unless-stopped
