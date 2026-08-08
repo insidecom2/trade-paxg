@@ -5,6 +5,7 @@ aiosignal==1.4.0
 annotated-types==0.8.0
 attrs==26.1.0
 ccxt==4.5.70
+fastapi==0.141.1
 certifi==2026.6.17
 cffi==2.0.0
 charset-normalizer==3.4.7
@@ -25,5 +26,6 @@ typing-inspection==0.4.2
 typing_extensions==4.16.0
 urllib3==2.7.0
 uvloop==0.22.1
+uvicorn==0.52.1
 yarl==1.24.2
 zlib-ng==1.0.0
