@@ -1,9 +1,15 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from analyzer import MarketAnalyzer
-from main import build_signal_summary, resolve_dynamic_levels
+from main import (
+    build_signal_summary,
+    prepare_analysis_candles,
+    resolve_dynamic_levels,
+    should_send_signal_notification,
+)
 from models import Candle, Signal, Zone
 from trading_state import TradingStateStore
 
@@ -304,6 +310,47 @@ class TradingStateStoreTests(unittest.TestCase):
 
 
 class SignalSummaryTests(unittest.TestCase):
+    def test_analysis_candles_exclude_weekends_and_keep_latest_250(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        candles = [
+            Candle(
+                timestamp=int((start + timedelta(hours=4 * index)).timestamp() * 1000),
+                open=1.0,
+                high=1.0,
+                low=1.0,
+                close=1.0,
+                volume=1.0,
+            )
+            for index in range(400)
+        ]
+
+        analysis_candles = prepare_analysis_candles(candles, timeframe="4h")
+
+        self.assertEqual(len(analysis_candles), 250)
+        for candle in analysis_candles:
+            candle_start = datetime.fromtimestamp(candle.timestamp / 1000, tz=timezone.utc)
+            candle_end = candle_start + timedelta(hours=4)
+            self.assertNotEqual(candle_start.weekday(), 5)
+            if candle_start.weekday() == 6:
+                self.assertGreaterEqual(candle_start.hour, 22)
+            if candle_start.weekday() == 4:
+                self.assertLessEqual(candle_end.hour, 22)
+
+    def test_signal_notifications_skip_hold_only(self):
+        for action in ("BUY", "STRONG_BUY", "SELL", "STRONG_SELL"):
+            with self.subTest(action=action):
+                self.assertTrue(
+                    should_send_signal_notification(
+                        Signal(action=action, position="NEUTRAL", price=1.0, reason="test")
+                    )
+                )
+
+        self.assertFalse(
+            should_send_signal_notification(
+                Signal(action="HOLD", position="NEUTRAL", price=1.0, reason="test")
+            )
+        )
+
     def test_trade_levels_are_only_shown_for_trade_actions(self):
         trade_signal = Signal(
             action="SELL",
