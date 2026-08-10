@@ -1,6 +1,6 @@
 SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
-CRON_TZ=UTC
+CRON_TZ=Asia/Bangkok
 
-# Run at the start and end of the London-New York overlap, four hours apart.
-0 13,17 * * 1-5 app cd /app && /usr/local/bin/python main.py --symbol "${TRADING_SYMBOL:-PAXG/USDT}" --timeframe "${TRADING_TIMEFRAME:-4h}" >> /proc/1/fd/1 2>> /proc/1/fd/2
+# Run at minute 1 every four hours, Monday through Friday, in Bangkok time.
+1 */4 * * 1-5 root cd /app/trade-paxg && su -s /bin/sh app -c "/usr/local/bin/python main.py --symbol \"${TRADING_SYMBOL:-PAXG/USDT}\" --timeframe \"${TRADING_TIMEFRAME:-4h}\"" >> /proc/1/fd/1 2>> /proc/1/fd/2

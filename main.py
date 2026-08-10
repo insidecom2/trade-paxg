@@ -27,7 +27,7 @@ def parse_args():
         "--tf",
         "--timeframe",
         dest="timeframe",
-        default="15m",
+        default="4h",
         choices=["1m", "5m", "15m", "1h", "4h", "1d"],
         help="Strategy candle timeframe (default: 15m)",
     )
@@ -142,7 +142,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
         state_store = TradingStateStore()
         state_key = f"{symbol}|{timeframe}"
         previous_state = state_store.get(state_key)
-        
+
         # Find SND Zones
         snd_zones = analyzer.find_snd_zones(closed_candles)
         # Find Support/Resistance
@@ -150,7 +150,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
 
         # 3. Production Logging of Results
         logger.info("--- ANALYSIS REPORT ---")
-        
+
         # Log SND
         for zone in snd_zones[-3:]: # Show last 3 zones
             logger.info(f"Zone Found: {zone.type} | Range: [{zone.bottom:.2f} - {zone.top:.2f}]")
@@ -160,7 +160,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
             logger.info(f"Key Resistance Levels: {sorted(res_levels, reverse=True)[:3]}")
         if sup_levels:
             logger.info(f"Key Support Levels: {sorted(sup_levels)[:3]}")
-            
+
         logger.info("-----------------------")
 
         # 4. Trading Signal (dynamic support/resistance from live data)
