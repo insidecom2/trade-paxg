@@ -1,13 +1,15 @@
 services:
-  trade-paxg-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    ports:
-      - "127.0.0.1:8082:80"
-    restart: unless-stopped
+  # trade-paxg-api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   env_file:
+  #     - .env
+  #   ports:
+  #     - "127.0.0.1:8082:80"
+  #   restart: unless-stopped
+  #
+  #
 
   trade-paxg-cron:
     build:
