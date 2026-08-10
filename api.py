@@ -12,7 +12,7 @@ Timeframe = Literal["1m", "5m", "15m", "1h", "4h", "1d"]
 
 class AnalysisRequest(BaseModel):
     symbol: str = Field(default="PAXG/USDT", min_length=1, max_length=32)
-    timeframe: Timeframe = "15m"
+    timeframe: Timeframe = "4h"
 
 
 class ExitProfitRequest(BaseModel):

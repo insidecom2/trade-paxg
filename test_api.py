@@ -19,6 +19,11 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(route.methods, {"GET"})
         self.assertEqual(route.status_code, 200)
 
+    def test_analyze_defaults_to_4h(self):
+        request = AnalysisRequest()
+
+        self.assertEqual(request.timeframe, "4h")
+
     async def test_analyze_schedules_main_with_request_params(self):
         request = AnalysisRequest(symbol="BTC/USDT", timeframe="1h")
         background_tasks = BackgroundTasks()

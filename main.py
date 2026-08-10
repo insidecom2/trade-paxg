@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import logging
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from exchange_manager import BinanceManager
 from analyzer import MarketAnalyzer
@@ -19,6 +20,17 @@ logger = logging.getLogger("TradingBot")
 # Load secrets from .env before reading config
 load_dotenv()
 
+FETCH_CANDLE_LIMIT = 400
+ANALYSIS_CANDLE_LIMIT = 250
+TIMEFRAME_DURATIONS = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "1d": timedelta(days=1),
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="PAXG Trading Signal Bot")
@@ -29,7 +41,7 @@ def parse_args():
         dest="timeframe",
         default="4h",
         choices=["1m", "5m", "15m", "1h", "4h", "1d"],
-        help="Strategy candle timeframe (default: 15m)",
+        help="Strategy candle timeframe (default: 4h)",
     )
     return parser.parse_args()
 
@@ -45,6 +57,32 @@ def format_volume_summary(signal: Signal) -> str:
     if signal.volume_ratio is not None:
         volume_summary += f" ({signal.volume_ratio:.2f}x เทียบค่าเฉลี่ย 20 แท่ง)"
     return volume_summary
+
+
+def should_send_signal_notification(signal: Signal) -> bool:
+    """Send Telegram notifications for every action except HOLD."""
+    return signal.action != "HOLD"
+
+
+def prepare_analysis_candles(
+    candles,
+    timeframe: str = "4h",
+    limit: int = ANALYSIS_CANDLE_LIMIT,
+):
+    """Return the latest closed candles inside the approximate XAUUSD session."""
+    closed_candles = candles[:-1] if len(candles) > 1 else candles
+    candle_duration = TIMEFRAME_DURATIONS[timeframe]
+    session_candles = []
+    for candle in closed_candles:
+        candle_start = datetime.fromtimestamp(candle.timestamp / 1000, tz=timezone.utc)
+        sunday = candle_start - timedelta(days=(candle_start.weekday() + 1) % 7)
+        session_open = sunday.replace(hour=22, minute=0, second=0, microsecond=0)
+        session_close = session_open + timedelta(days=5)
+        candle_end = candle_start + candle_duration
+        if candle_start >= session_open and candle_end <= session_close:
+            session_candles.append(candle)
+
+    return session_candles[-limit:]
 
 
 def build_signal_summary(
@@ -123,7 +161,7 @@ def resolve_dynamic_levels(
 
     return analyzer.find_dynamic_levels(candles, price, lookback=lookback)
 
-async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
+async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
     logger.info(f"🚀 Starting Analysis for {symbol}...")
 
     notifier = TelegramNotifier.from_env()
@@ -131,11 +169,15 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
     try:
         # 1. Data Acquisition
         current_price = await exchange.fetch_current_price(symbol)
-        candles = await exchange.fetch_ohlcv(symbol, timeframe, limit=250)
+        candles = await exchange.fetch_ohlcv(symbol, timeframe, limit=FETCH_CANDLE_LIMIT)
         logger.info(f"Successfully fetched {len(candles)} candles.")
 
-        # Binance may include the currently open candle; strategy decisions use closed candles only.
-        closed_candles = candles[:-1] if len(candles) > 1 else candles
+        # Approximate XAUUSD history while retaining 250 candles for analysis.
+        closed_candles = prepare_analysis_candles(candles, timeframe=timeframe)
+        logger.info(
+            "Using %d closed XAUUSD-session candles for analysis (weekend/session boundaries excluded).",
+            len(closed_candles),
+        )
 
         # 2. Analysis
         analyzer = MarketAnalyzer()
@@ -199,7 +241,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "15m") -> bool:
         logger.info("-----------------------")
 
         # 5. Telegram Notification
-        if notifier is not None:
+        if notifier is not None and should_send_signal_notification(signal):
             await notifier.send_message(
                 build_signal_summary(
                     symbol,
