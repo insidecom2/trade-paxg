@@ -3,4 +3,4 @@ PATH=/usr/local/bin:/usr/bin:/bin
 CRON_TZ=Asia/Bangkok
 
 # Run at minute 1 every four hours, Monday through Friday, in Bangkok time.
-1 */4 * * 1-5 root cd /app && su -s /bin/sh app -c "/usr/local/bin/python main.py --symbol \"${TRADING_SYMBOL:-PAXG/USDT}\" --timeframe \"${TRADING_TIMEFRAME:-4h}\"" >> /proc/1/fd/1 2>> /proc/1/fd/2
+1 */4 * * 1-5 root cd /app && /app/run_cron_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2

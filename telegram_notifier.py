@@ -57,6 +57,7 @@ class TelegramNotifier:
                         timeout=aiohttp.ClientTimeout(total=self.timeout),
                     ) as resp:
                         if resp.status == 200:
+                            logger.info("Telegram message accepted by the API")
                             return True
 
                         detail = (await resp.text()).strip()
