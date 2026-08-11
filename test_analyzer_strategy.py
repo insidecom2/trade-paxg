@@ -428,6 +428,39 @@ class DynamicLevelTests(unittest.TestCase):
     def setUp(self):
         self.analyzer = MarketAnalyzer()
 
+    def test_key_levels_use_recent_levels_on_the_correct_side_of_price(self):
+        highs = [10.0, 11.0, 20.0, 12.0, 13.0, 30.0, 14.0, 15.0, 25.0]
+        lows = [8.0, 7.0, 6.0, 9.0, 10.0, 5.0, 11.0, 12.0, 13.0]
+        candles = [
+            Candle(
+                timestamp=index,
+                open=(high + low) / 2,
+                high=high,
+                low=low,
+                close=(high + low) / 2,
+                volume=100.0,
+            )
+            for index, (high, low) in enumerate(zip(highs, lows))
+        ]
+
+        resistance, support = self.analyzer.find_key_levels(candles, price=22.0)
+
+        self.assertEqual(resistance, [30.0])
+        self.assertEqual(support, [6.0, 5.0])
+
+    def test_recent_zones_only_include_zones_near_current_price(self):
+        candles = [
+            Candle(timestamp=0, open=200.0, high=201.0, low=199.0, close=200.0, volume=100.0),
+            Candle(timestamp=1, open=100.0, high=101.0, low=99.0, close=100.5, volume=100.0),
+            Candle(timestamp=2, open=100.0, high=102.0, low=99.5, close=102.0, volume=100.0),
+        ]
+
+        zones = self.analyzer.find_recent_snd_zones(candles, price=100.5)
+
+        self.assertEqual(len(zones), 1)
+        self.assertEqual(zones[0].type, "DEMAND")
+        self.assertEqual((zones[0].bottom, zones[0].top), (99.0, 101.0))
+
     def test_dynamic_levels_use_recent_lookback_for_fallbacks(self):
         candles = [
             Candle(
