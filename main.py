@@ -22,6 +22,8 @@ load_dotenv()
 
 FETCH_CANDLE_LIMIT = 400
 ANALYSIS_CANDLE_LIMIT = 250
+ANALYSIS_REPORT_ITEM_LIMIT = 3
+ANALYSIS_REPORT_LOOKBACK = 60
 TIMEFRAME_DURATIONS = {
     "1m": timedelta(minutes=1),
     "5m": timedelta(minutes=5),
@@ -185,23 +187,39 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         state_key = f"{symbol}|{timeframe}"
         previous_state = state_store.get(state_key)
 
-        # Find SND Zones
-        snd_zones = analyzer.find_snd_zones(closed_candles)
-        # Find Support/Resistance
-        res_levels, sup_levels = analyzer.find_support_resistance(closed_candles)
+        # Find recent zones and levels relevant to the current price.
+        latest_zones = analyzer.find_recent_snd_zones(
+            closed_candles,
+            current_price,
+            lookback=ANALYSIS_REPORT_LOOKBACK,
+            limit=ANALYSIS_REPORT_ITEM_LIMIT,
+        )
+        latest_resistance_levels, latest_support_levels = analyzer.find_key_levels(
+            closed_candles,
+            current_price,
+            lookback=ANALYSIS_REPORT_LOOKBACK,
+            limit=ANALYSIS_REPORT_ITEM_LIMIT,
+        )
 
         # 3. Production Logging of Results
         logger.info("--- ANALYSIS REPORT ---")
 
         # Log SND
-        for zone in snd_zones[-3:]: # Show last 3 zones
-            logger.info(f"Zone Found: {zone.type} | Range: [{zone.bottom:.2f} - {zone.top:.2f}]")
+        if latest_zones:
+            for zone in latest_zones:
+                logger.info(f"Zone Found: {zone.type} | Range: [{zone.bottom:.2f} - {zone.top:.2f}]")
+        else:
+            logger.info("Zone Found: NONE")
 
         # Log SE
-        if res_levels:
-            logger.info(f"Key Resistance Levels: {sorted(res_levels, reverse=True)[:3]}")
-        if sup_levels:
-            logger.info(f"Key Support Levels: {sorted(sup_levels)[:3]}")
+        if latest_resistance_levels:
+            logger.info(f"Key Resistance Levels: {latest_resistance_levels}")
+        else:
+            logger.info("Key Resistance Levels: NONE")
+        if latest_support_levels:
+            logger.info(f"Key Support Levels: {latest_support_levels}")
+        else:
+            logger.info("Key Support Levels: NONE")
 
         logger.info("-----------------------")
 
@@ -251,9 +269,9 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
                     resistance,
                     current_price,
                     candles_fetched=len(candles),
-                    zones=snd_zones[-3:],
-                    key_resistance_levels=sorted(res_levels, reverse=True)[:3],
-                    key_support_levels=sorted(sup_levels)[:3],
+                    zones=latest_zones,
+                    key_resistance_levels=latest_resistance_levels,
+                    key_support_levels=latest_support_levels,
                 )
             )
         return True

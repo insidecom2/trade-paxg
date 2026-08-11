@@ -24,6 +24,32 @@ class MarketAnalyzer:
                     zones.append(Zone(type="SUPPLY", top=candles[i].high, bottom=candles[i].low))
         return zones
 
+    def find_recent_snd_zones(
+        self,
+        candles: List[Candle],
+        price: float,
+        lookback: int = 60,
+        limit: int = 3,
+    ) -> List[Zone]:
+        """Returns the latest zones that are near or contain the current price."""
+        if not candles or limit <= 0:
+            return []
+
+        recent_candles = candles[-max(5, lookback):]
+        zones = self.find_snd_zones(recent_candles)
+        tolerance = self.calculate_zone_tolerance(recent_candles)
+        max_distance = tolerance * price
+        nearby_zones = []
+
+        for zone in reversed(zones):
+            distance = max(zone.bottom - price, price - zone.top, 0.0)
+            if distance <= max_distance:
+                nearby_zones.append(zone)
+                if len(nearby_zones) == limit:
+                    break
+
+        return nearby_zones
+
     def find_support_resistance(self, candles: List[Candle]) -> Tuple[List[float], List[float]]:
         """
         Finds SE (Support/Resistance) using local extrema.
@@ -42,6 +68,31 @@ class MarketAnalyzer:
                 sup_levels.append(lows[i])
                 
         return res_levels, sup_levels
+
+    def find_key_levels(
+        self,
+        candles: List[Candle],
+        price: float,
+        lookback: int = 60,
+        limit: int = 3,
+    ) -> Tuple[List[float], List[float]]:
+        """Returns recent resistance above and support below the current price."""
+        if not candles or limit <= 0:
+            return [], []
+
+        recent_candles = candles[-max(5, lookback):]
+        res_levels, sup_levels = self.find_support_resistance(recent_candles)
+        resistances = self._cluster_levels(res_levels)
+        supports = self._cluster_levels(sup_levels)
+
+        recent_resistances = sorted(
+            (level for level in resistances if level >= price),
+        )[:limit]
+        recent_supports = sorted(
+            (level for level in supports if level <= price),
+            reverse=True,
+        )[:limit]
+        return recent_resistances, recent_supports
 
     def _cluster_levels(self, levels: List[float], tolerance: float = 0.002) -> List[float]:
         """Collapses levels within `tolerance` of each other to remove near-duplicates."""
