@@ -240,8 +240,8 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         logger.info(f"Reason: {signal.reason}")
         logger.info("-----------------------")
 
-        # 5. Telegram Notification
-        if notifier is not None and should_send_signal_notification(signal):
+        # 5. Telegram Notification All signal
+        if notifier is not None:
             await notifier.send_message(
                 build_signal_summary(
                     symbol,
