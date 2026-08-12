@@ -15,5 +15,10 @@ done <<EOF
 $cron_environment
 EOF
 
+# A positional timeframe takes precedence over the container environment. This
+# makes the cron entry explicit while retaining the environment fallback for
+# manual invocations without an argument.
+export TRADING_TIMEFRAME="${1:-${TRADING_TIMEFRAME:-4h}}"
+
 exec su -s /bin/sh app -c \
     'exec /usr/local/bin/python main.py --symbol "${TRADING_SYMBOL:-PAXG/USDT}" --timeframe "${TRADING_TIMEFRAME:-4h}"'

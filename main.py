@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import logging
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from exchange_manager import BinanceManager
@@ -32,6 +33,41 @@ TIMEFRAME_DURATIONS = {
     "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
 }
+
+
+def validate_candle_timeframe(candles, timeframe: str) -> int:
+    """Verify that fetched candles use the requested strategy timeframe.
+
+    Missing candles (for example around a market/session gap) are tolerated,
+    but the most common positive interval must match the requested timeframe.
+    Returning the observed interval also makes the check easy to log and test.
+    """
+    if timeframe not in TIMEFRAME_DURATIONS:
+        raise ValueError(f"Unsupported timeframe: {timeframe}")
+    if len(candles) < 2:
+        raise ValueError(
+            f"Cannot verify {timeframe} candle interval with fewer than two candles"
+        )
+
+    intervals = [
+        current.timestamp - previous.timestamp
+        for previous, current in zip(candles, candles[1:])
+        if current.timestamp > previous.timestamp
+    ]
+    if not intervals:
+        raise ValueError(f"Cannot verify {timeframe} candle interval: invalid timestamps")
+
+    observed_interval = Counter(intervals).most_common(1)[0][0]
+    expected_interval = int(TIMEFRAME_DURATIONS[timeframe].total_seconds() * 1000)
+    if observed_interval != expected_interval:
+        observed_minutes = observed_interval / 60_000
+        expected_minutes = expected_interval / 60_000
+        raise ValueError(
+            "Candle timeframe mismatch: "
+            f"requested={timeframe} ({expected_minutes:g}m), "
+            f"received={observed_minutes:g}m"
+        )
+    return observed_interval
 
 
 def parse_args():
@@ -172,7 +208,14 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         # 1. Data Acquisition
         current_price = await exchange.fetch_current_price(symbol)
         candles = await exchange.fetch_ohlcv(symbol, timeframe, limit=FETCH_CANDLE_LIMIT)
+        observed_interval = validate_candle_timeframe(candles, timeframe)
         logger.info(f"Successfully fetched {len(candles)} candles.")
+        logger.info(
+            "Timeframe check passed: requested=%s, candle interval=%dm; "
+            "all strategy calculations use this timeframe",
+            timeframe,
+            observed_interval // 60_000,
+        )
 
         # Approximate XAUUSD history while retaining 250 candles for analysis.
         closed_candles = prepare_analysis_candles(candles, timeframe=timeframe)

@@ -9,9 +9,29 @@ from main import (
     prepare_analysis_candles,
     resolve_dynamic_levels,
     should_send_signal_notification,
+    validate_candle_timeframe,
 )
 from models import Candle, Signal, Zone
 from trading_state import TradingStateStore
+
+
+class TimeframeValidationTests(unittest.TestCase):
+    def test_accepts_requested_one_hour_candles(self):
+        candles = [
+            Candle(timestamp=index * 3_600_000, open=1, high=1, low=1, close=1, volume=1)
+            for index in range(3)
+        ]
+
+        self.assertEqual(validate_candle_timeframe(candles, "1h"), 3_600_000)
+
+    def test_rejects_candles_with_a_different_interval(self):
+        candles = [
+            Candle(timestamp=index * 14_400_000, open=1, high=1, low=1, close=1, volume=1)
+            for index in range(3)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "requested=1h.*received=240m"):
+            validate_candle_timeframe(candles, "1h")
 
 
 def make_downtrend_candles(count=220):
