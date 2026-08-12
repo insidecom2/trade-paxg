@@ -20,10 +20,10 @@ Or start it with Compose on host port 8082:
 docker compose up --build -d
 ```
 
-Compose also starts a cron container that runs the strategy at 13:00 and 17:00
-UTC, Monday through Friday, during the London–New York overlap.
-Set `TRADING_SYMBOL` or `TRADING_TIMEFRAME` in `.env` to change the scheduled
-command.
+Compose also starts a cron container that runs the `1h` strategy every hour and
+the independent `4h` strategy every four hours, Monday through Friday, in the
+configured cron timezone. When both schedules overlap, both calculations run.
+Set `TRADING_SYMBOL` in `.env` to change the scheduled symbol.
 
 Trigger an analysis:
 
