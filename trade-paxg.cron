@@ -5,5 +5,5 @@ CRON_TZ=Asia/Bangkok
 # Run both strategies independently. At 00:01, 04:01, 08:01, ... both jobs run.
 # Separate locks prevent duplicate work within one timeframe without blocking
 # the other timeframe when their schedules overlap.
-1 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-1h.lock /app/run_cron_job.sh 1h >> /proc/1/fd/1 2>> /proc/1/fd/2
+# 1 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-1h.lock /app/run_cron_job.sh 1h >> /proc/1/fd/1 2>> /proc/1/fd/2
 1 */4 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-4h.lock /app/run_cron_job.sh 4h >> /proc/1/fd/1 2>> /proc/1/fd/2
