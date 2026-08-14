@@ -406,20 +406,14 @@ class SignalSummaryTests(unittest.TestCase):
             if candle_start.weekday() == 4:
                 self.assertLessEqual(candle_end.hour, 22)
 
-    def test_signal_notifications_skip_hold_only(self):
-        for action in ("BUY", "STRONG_BUY", "SELL", "STRONG_SELL"):
+    def test_signal_notifications_include_hold_and_trade_actions(self):
+        for action in ("BUY", "STRONG_BUY", "SELL", "STRONG_SELL", "HOLD"):
             with self.subTest(action=action):
                 self.assertTrue(
                     should_send_signal_notification(
                         Signal(action=action, position="NEUTRAL", price=1.0, reason="test")
                     )
                 )
-
-        self.assertFalse(
-            should_send_signal_notification(
-                Signal(action="HOLD", position="NEUTRAL", price=1.0, reason="test")
-            )
-        )
 
     def test_trade_levels_are_only_shown_for_trade_actions(self):
         trade_signal = Signal(
@@ -451,7 +445,7 @@ class SignalSummaryTests(unittest.TestCase):
         self.assertIn("Volume: หนาแน่น (1.50x", trade_summary)
         self.assertNotIn("Entry:", hold_summary)
 
-    def test_summary_includes_analysis_report_details(self):
+    def test_summary_contains_only_trading_signal_details(self):
         signal = Signal(
             action="HOLD",
             position="NEUTRAL",
@@ -469,19 +463,12 @@ class SignalSummaryTests(unittest.TestCase):
             4026.81,
             4043.48,
             4031.64,
-            candles_fetched=250,
-            zones=[Zone(type="DEMAND", top=4050.08, bottom=4046.40)],
-            key_resistance_levels=[4197.02, 4188.74, 4174.81],
-            key_support_levels=[3944.57, 3956.89, 3959.0],
         )
 
-        self.assertIn("=== ANALYSIS REPORT ===", summary)
-        self.assertIn("Candles Fetched: 250", summary)
-        self.assertIn("Zone Found: DEMAND | Range: [4046.40 - 4050.08]", summary)
-        self.assertIn("Key Resistance Levels: [4197.02, 4188.74, 4174.81]", summary)
-        self.assertIn("Key Support Levels: [3944.57, 3956.89, 3959.0]", summary)
         self.assertIn("=== TRADING SIGNAL ===", summary)
         self.assertIn("Dynamic Levels: Support=$4026.81 | Resistance=$4043.48", summary)
+        self.assertNotIn("ANALYSIS REPORT", summary)
+        self.assertNotIn("Zone Found:", summary)
 
 
 class VolumeClassificationTests(unittest.TestCase):

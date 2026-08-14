@@ -247,24 +247,17 @@ async def run_standalone(symbol: str = "PAXG/USDT") -> None:
     from dotenv import load_dotenv
 
     from exchange_manager import BinanceManager
-    from exit_profit_notification import (
-        build_exit_profit_notification,
-        should_send_exit_profit_notification,
-    )
-    from telegram_notifier import TelegramNotifier
+    from exit_profit_notification import build_exit_profit_notification
 
     load_dotenv()
     logging.basicConfig(level=logging.INFO)
     exchange = BinanceManager()
-    notifier = TelegramNotifier.from_env()
     try:
         candles = await exchange.fetch_ohlcv(symbol, "15m", limit=250)
         closed_candles = candles[:-1] if len(candles) > 1 else candles
         check = check_exit_profit_zone(closed_candles)
         message = build_exit_profit_notification(symbol, check)
         print(message)
-        if notifier is not None and should_send_exit_profit_notification(check):
-            await notifier.send_message(message)
     finally:
         await exchange.close()
 
