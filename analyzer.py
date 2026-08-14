@@ -135,6 +135,42 @@ class MarketAnalyzer:
 
         return support, resistance
 
+    def find_next_resistance(
+        self,
+        candles: List[Candle],
+        resistance: float,
+        lookback: int = 60,
+    ) -> Optional[float]:
+        """Returns the nearest clustered swing resistance strictly above `resistance`."""
+        if not candles:
+            return None
+
+        recent_candles = candles[-max(5, lookback):]
+        resistance_levels, _ = self.find_support_resistance(recent_candles)
+        clustered_levels = self._cluster_levels(resistance_levels)
+        return min(
+            (level for level in clustered_levels if level > resistance),
+            default=None,
+        )
+
+    def find_next_support(
+        self,
+        candles: List[Candle],
+        support: float,
+        lookback: int = 60,
+    ) -> Optional[float]:
+        """Returns the nearest clustered swing support strictly below `support`."""
+        if not candles:
+            return None
+
+        recent_candles = candles[-max(5, lookback):]
+        _, support_levels = self.find_support_resistance(recent_candles)
+        clustered_levels = self._cluster_levels(support_levels)
+        return max(
+            (level for level in clustered_levels if level < support),
+            default=None,
+        )
+
     def calculate_zone_tolerance(
         self,
         candles: List[Candle],
@@ -311,6 +347,8 @@ class MarketAnalyzer:
         volume_multiplier: float = 1.2,
         long_factor: float = 2.0,
         market_price: Optional[float] = None,
+        next_support: Optional[float] = None,
+        minimum_next_support_atr: float = 3.0,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates support tests, breakdowns, retests, and invalidations."""
         if not candles:
@@ -329,19 +367,38 @@ class MarketAnalyzer:
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
         tracked_support = float(state.get("support", support))
+        active_breakdown_statuses = {
+            "BREAKDOWN_WATCH",
+            "BREAKDOWN_CONFIRMED",
+            "RETEST_REJECTED",
+        }
+        tracked_next_support = next_support
+        if (
+            previous_status in active_breakdown_statuses
+            and state.get("next_support") is not None
+        ):
+            tracked_next_support = float(state["next_support"])
         candle_timestamp = int(candle.timestamp)
         observed_price = float(market_price) if market_price is not None else candle.close
         is_new_candle = state.get("last_candle_timestamp") != candle_timestamp
+        current_atr = self.atr(candles)
+        next_support_distance = (
+            candle.close - tracked_next_support
+            if tracked_next_support is not None
+            else None
+        )
+        next_support_far_enough = (
+            next_support_distance is not None
+            and current_atr is not None
+            and current_atr > 0
+            and next_support_distance >= minimum_next_support_atr * current_atr
+        )
 
         action = "HOLD"
         status = "NEUTRAL"
         reason = "No support strategy signal"
 
-        active_breakdown = previous_status in {
-            "BREAKDOWN_WATCH",
-            "BREAKDOWN_CONFIRMED",
-            "RETEST_REJECTED",
-        }
+        active_breakdown = previous_status in active_breakdown_statuses
         if active_breakdown:
             if previous_status == "BREAKDOWN_WATCH":
                 watch_invalidated = (
@@ -375,21 +432,41 @@ class MarketAnalyzer:
                 and pattern == "LONG_RED"
                 and volume_high
                 and downtrend
+                and next_support_far_enough
             ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
-                reason = "Support breakdown confirmed by LONG_RED, high volume, and downtrend"
+                reason = (
+                    "Support breakdown confirmed by LONG_RED, high volume, downtrend, "
+                    "and sufficient distance to next support"
+                )
             else:
                 status = previous_status
-                reason = "Breakdown watch active; confirmation conditions are incomplete"
+                reason = (
+                    "Breakdown watch active; waiting for LONG_RED, high volume, downtrend, "
+                    "and sufficient distance to next support"
+                )
         elif observed_price < support:
-            if is_new_candle and candle.close < support and pattern == "LONG_RED" and volume_high and downtrend:
+            if (
+                is_new_candle
+                and candle.close < support
+                and pattern == "LONG_RED"
+                and volume_high
+                and downtrend
+                and next_support_far_enough
+            ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
-                reason = "Support breakdown confirmed by LONG_RED, high volume, and downtrend"
+                reason = (
+                    "Support breakdown confirmed by LONG_RED, high volume, downtrend, "
+                    "and sufficient distance to next support"
+                )
             else:
                 status = "BREAKDOWN_WATCH"
-                reason = "Price is below support; waiting for LONG_RED, high volume, and downtrend"
+                reason = (
+                    "Price is below support; waiting for LONG_RED, high volume, downtrend, "
+                    "and sufficient distance to next support"
+                )
         elif is_new_candle and position == "SUPPORT":
             if pattern == "HAMMER":
                 status = "SUPPORT_BOUNCE_CONFIRMED"
@@ -406,7 +483,12 @@ class MarketAnalyzer:
             "status": status,
             "support": tracked_support if active_breakdown else float(support),
             "last_candle_timestamp": candle_timestamp,
+            "next_support_far_enough": next_support_far_enough,
         }
+        if tracked_next_support is not None:
+            next_state["next_support"] = float(tracked_next_support)
+        if current_atr is not None:
+            next_state["breakdown_atr"] = round(float(current_atr), 8)
         if status == "BREAKDOWN_CONFIRMED" and action == "SELL":
             next_state["breakdown_timestamp"] = candle_timestamp
         elif active_breakdown and "breakdown_timestamp" in state:
@@ -448,6 +530,8 @@ class MarketAnalyzer:
         volume_multiplier: float = 1.2,
         long_factor: float = 2.0,
         market_price: Optional[float] = None,
+        next_resistance: Optional[float] = None,
+        minimum_next_resistance_atr: float = 3.0,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates resistance tests, breakouts, retests, and invalidations."""
         if not candles:
@@ -466,19 +550,38 @@ class MarketAnalyzer:
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
         tracked_resistance = float(state.get("resistance", resistance))
+        active_breakout_statuses = {
+            "BREAKOUT_WATCH",
+            "BREAKOUT_CONFIRMED",
+            "RETEST_HELD",
+        }
+        tracked_next_resistance = next_resistance
+        if (
+            previous_status in active_breakout_statuses
+            and state.get("next_resistance") is not None
+        ):
+            tracked_next_resistance = float(state["next_resistance"])
         candle_timestamp = int(candle.timestamp)
         observed_price = float(market_price) if market_price is not None else candle.close
         is_new_candle = state.get("last_candle_timestamp") != candle_timestamp
+        current_atr = self.atr(candles)
+        next_resistance_distance = (
+            tracked_next_resistance - candle.close
+            if tracked_next_resistance is not None
+            else None
+        )
+        next_resistance_far_enough = (
+            next_resistance_distance is not None
+            and current_atr is not None
+            and current_atr > 0
+            and next_resistance_distance >= minimum_next_resistance_atr * current_atr
+        )
 
         action = "HOLD"
         status = "NEUTRAL"
         reason = "No resistance strategy signal"
 
-        active_breakout = previous_status in {
-            "BREAKOUT_WATCH",
-            "BREAKOUT_CONFIRMED",
-            "RETEST_HELD",
-        }
+        active_breakout = previous_status in active_breakout_statuses
         if active_breakout:
             if previous_status == "BREAKOUT_WATCH":
                 watch_invalidated = (
@@ -512,21 +615,41 @@ class MarketAnalyzer:
                 and pattern == "LONG_GREEN"
                 and volume_high
                 and uptrend
+                and next_resistance_far_enough
             ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
-                reason = "Resistance breakout confirmed by LONG_GREEN, high volume, and uptrend"
+                reason = (
+                    "Resistance breakout confirmed by LONG_GREEN, high volume, uptrend, "
+                    "and sufficient distance to next resistance"
+                )
             else:
                 status = previous_status
-                reason = "Breakout watch active; confirmation conditions are incomplete"
+                reason = (
+                    "Breakout watch active; waiting for LONG_GREEN, high volume, uptrend, "
+                    "and sufficient distance to next resistance"
+                )
         elif observed_price > resistance:
-            if is_new_candle and candle.close > resistance and pattern == "LONG_GREEN" and volume_high and uptrend:
+            if (
+                is_new_candle
+                and candle.close > resistance
+                and pattern == "LONG_GREEN"
+                and volume_high
+                and uptrend
+                and next_resistance_far_enough
+            ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
-                reason = "Resistance breakout confirmed by LONG_GREEN, high volume, and uptrend"
+                reason = (
+                    "Resistance breakout confirmed by LONG_GREEN, high volume, uptrend, "
+                    "and sufficient distance to next resistance"
+                )
             else:
                 status = "BREAKOUT_WATCH"
-                reason = "Price is above resistance; waiting for LONG_GREEN, high volume, and uptrend"
+                reason = (
+                    "Price is above resistance; waiting for LONG_GREEN, high volume, uptrend, "
+                    "and sufficient distance to next resistance"
+                )
         elif is_new_candle and position == "RESISTANCE":
             if pattern == "SHOOTING_STAR":
                 status = "RESISTANCE_REJECTION_CONFIRMED"
@@ -543,7 +666,12 @@ class MarketAnalyzer:
             "status": status,
             "resistance": tracked_resistance if active_breakout else float(resistance),
             "last_candle_timestamp": candle_timestamp,
+            "next_resistance_far_enough": next_resistance_far_enough,
         }
+        if tracked_next_resistance is not None:
+            next_state["next_resistance"] = float(tracked_next_resistance)
+        if current_atr is not None:
+            next_state["breakout_atr"] = round(float(current_atr), 8)
         if status == "BREAKOUT_CONFIRMED" and action == "BUY":
             next_state["breakout_timestamp"] = candle_timestamp
         elif active_breakout and "breakout_timestamp" in state:
@@ -583,6 +711,10 @@ class MarketAnalyzer:
         previous_state: Optional[Dict[str, Any]] = None,
         tolerance: float = 0.003,
         market_price: Optional[float] = None,
+        next_resistance: Optional[float] = None,
+        minimum_next_resistance_atr: float = 3.0,
+        next_support: Optional[float] = None,
+        minimum_next_support_atr: float = 3.0,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Selects support or resistance strategy based on the active level."""
         if not candles:
@@ -612,6 +744,8 @@ class MarketAnalyzer:
                 previous_state=state,
                 tolerance=tolerance,
                 market_price=market_price,
+                next_resistance=next_resistance,
+                minimum_next_resistance_atr=minimum_next_resistance_atr,
             )
         else:
             signal, next_state = self.generate_support_strategy_signal(
@@ -621,6 +755,8 @@ class MarketAnalyzer:
                 previous_state=state,
                 tolerance=tolerance,
                 market_price=market_price,
+                next_support=next_support,
+                minimum_next_support_atr=minimum_next_support_atr,
             )
         next_state["level"] = level
         return signal, next_state

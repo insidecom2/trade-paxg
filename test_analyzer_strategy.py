@@ -95,7 +95,10 @@ class SupportStrategyTests(unittest.TestCase):
         )
 
         signal, state = self.analyzer.generate_support_strategy_signal(
-            candles, support=self.support, resistance=self.resistance
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_support=384.0,
         )
 
         self.assertEqual(signal.status, "BREAKDOWN_CONFIRMED")
@@ -110,6 +113,25 @@ class SupportStrategyTests(unittest.TestCase):
             signal.stop_loss - signal.entry_price,
             (signal.entry_price - signal.take_profit) / 2,
         )
+
+    def test_breakdown_waits_when_next_support_is_missing_or_too_close(self):
+        candles = make_downtrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=400.0, high=400.0, low=390.0, close=390.0, volume=200.0)
+        )
+
+        for next_support in (None, 389.0):
+            with self.subTest(next_support=next_support):
+                signal, state = self.analyzer.generate_support_strategy_signal(
+                    candles,
+                    support=self.support,
+                    resistance=self.resistance,
+                    next_support=next_support,
+                )
+
+                self.assertEqual(signal.status, "BREAKDOWN_WATCH")
+                self.assertEqual(signal.action, "HOLD")
+                self.assertFalse(state["next_support_far_enough"])
 
     def test_live_breakdown_watch_survives_latest_close_above_support(self):
         candles = make_downtrend_candles()
@@ -263,7 +285,10 @@ class ResistanceStrategyTests(unittest.TestCase):
         )
 
         signal, state = self.analyzer.generate_strategy_signal(
-            candles, support=self.support, resistance=self.resistance
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_resistance=415.0,
         )
 
         self.assertEqual(signal.status, "BREAKOUT_CONFIRMED")
@@ -271,6 +296,25 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(state["level"], "RESISTANCE")
         self.assertLess(signal.stop_loss, signal.entry_price)
         self.assertGreater(signal.take_profit, signal.entry_price)
+
+    def test_breakout_waits_when_next_resistance_is_missing_or_too_close(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=400.0, high=410.0, low=400.0, close=410.0, volume=200.0)
+        )
+
+        for next_resistance in (None, 411.0):
+            with self.subTest(next_resistance=next_resistance):
+                signal, state = self.analyzer.generate_strategy_signal(
+                    candles,
+                    support=self.support,
+                    resistance=self.resistance,
+                    next_resistance=next_resistance,
+                )
+
+                self.assertEqual(signal.status, "BREAKOUT_WATCH")
+                self.assertEqual(signal.action, "HOLD")
+                self.assertFalse(state["next_resistance_far_enough"])
 
     def test_live_breakout_watch_survives_latest_close_below_resistance(self):
         candles = make_uptrend_candles()
@@ -310,7 +354,11 @@ class ResistanceStrategyTests(unittest.TestCase):
         }
 
         signal, state = self.analyzer.generate_strategy_signal(
-            candles, support=self.support, resistance=self.resistance, previous_state=previous_state
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            previous_state=previous_state,
+            next_resistance=415.0,
         )
 
         self.assertEqual(state["level"], "RESISTANCE")
@@ -504,6 +552,40 @@ class DynamicLevelTests(unittest.TestCase):
 
         self.assertEqual(resistance, [30.0])
         self.assertEqual(support, [6.0, 5.0])
+
+    def test_next_resistance_returns_nearest_level_above_current_resistance(self):
+        highs = [10.0, 11.0, 20.0, 12.0, 13.0, 30.0, 14.0, 15.0, 25.0]
+        lows = [8.0, 7.0, 6.0, 9.0, 10.0, 5.0, 11.0, 12.0, 13.0]
+        candles = [
+            Candle(
+                timestamp=index,
+                open=(high + low) / 2,
+                high=high,
+                low=low,
+                close=(high + low) / 2,
+                volume=100.0,
+            )
+            for index, (high, low) in enumerate(zip(highs, lows))
+        ]
+
+        self.assertEqual(self.analyzer.find_next_resistance(candles, 20.0), 30.0)
+
+    def test_next_support_returns_nearest_level_below_current_support(self):
+        highs = [10.0, 11.0, 20.0, 12.0, 13.0, 30.0, 14.0, 15.0, 25.0]
+        lows = [8.0, 7.0, 6.0, 9.0, 10.0, 5.0, 11.0, 12.0, 13.0]
+        candles = [
+            Candle(
+                timestamp=index,
+                open=(high + low) / 2,
+                high=high,
+                low=low,
+                close=(high + low) / 2,
+                volume=100.0,
+            )
+            for index, (high, low) in enumerate(zip(highs, lows))
+        ]
+
+        self.assertEqual(self.analyzer.find_next_support(candles, 10.0), 6.0)
 
     def test_recent_zones_only_include_zones_near_current_price(self):
         candles = [
