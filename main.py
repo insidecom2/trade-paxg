@@ -98,8 +98,8 @@ def format_volume_summary(signal: Signal) -> str:
 
 
 def should_send_signal_notification(signal: Signal) -> bool:
-    """Send Telegram notifications for every action except HOLD."""
-    return signal.action != "HOLD"
+    """Send every generated trading signal, including HOLD."""
+    return True
 
 
 def prepare_analysis_candles(
@@ -130,42 +130,18 @@ def build_signal_summary(
     support: float,
     resistance: float,
     current_price: float,
-    candles_fetched=None,
-    zones=None,
-    key_resistance_levels=None,
-    key_support_levels=None,
 ) -> str:
     summary = [
-        "PAXG Trading Log",
-        "=== ANALYSIS REPORT ===",
-        f"Current Price: ${current_price:.2f}",
-        f"Candles Fetched: {candles_fetched if candles_fetched is not None else 'N/A'}",
-    ]
-    for zone in (zones or []):
-        summary.append(
-            f"Zone Found: {zone.type} | Range: [{zone.bottom:.2f} - {zone.top:.2f}]"
-        )
-    if not zones:
-        summary.append("Zone Found: NONE")
-    if key_resistance_levels:
-        summary.append(f"Key Resistance Levels: {key_resistance_levels}")
-    else:
-        summary.append("Key Resistance Levels: NONE")
-    if key_support_levels:
-        summary.append(f"Key Support Levels: {key_support_levels}")
-    else:
-        summary.append("Key Support Levels: NONE")
-    summary.extend([
         "=== TRADING SIGNAL ===",
         f"Timeframe: {timeframe} | Symbol: {symbol}",
-        f"Dynamic Levels: Support=${support:.2f} | Resistance=${resistance:.2f}",
         f"Action: {signal.action}",
         f"Status: {signal.status}",
         f"Position: {signal.position} | Pattern: {signal.pattern or 'NONE'}",
+        f"Dynamic Levels: Support=${support:.2f} | Resistance=${resistance:.2f}",
         format_volume_summary(signal),
         f"Last Close: ${signal.price:.2f} | Live Price: ${current_price:.2f}",
         f"Reason: {signal.reason}",
-    ])
+    ]
     if signal.entry_price is not None:
         summary.extend([
             f"Entry: ${signal.entry_price:.2f}",
@@ -333,8 +309,8 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         logger.info(f"Reason: {signal.reason}")
         logger.info("-----------------------")
 
-        # 5. Telegram Notification All signal
-        if notifier is not None:
+        # 5. Telegram Notification: every generated trading signal, including HOLD.
+        if notifier is not None and should_send_signal_notification(signal):
             await notifier.send_message(
                 build_signal_summary(
                     symbol,
@@ -343,18 +319,12 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
                     support,
                     resistance,
                     current_price,
-                    candles_fetched=len(candles),
-                    zones=latest_zones,
-                    key_resistance_levels=latest_resistance_levels,
-                    key_support_levels=latest_support_levels,
                 )
             )
         return True
 
     except Exception as e:
         logger.critical(f"System Failure: {e}", exc_info=True)
-        if notifier is not None:
-            await notifier.send_message(f"PAXG Trading Bot failure: {e}")
         return False
     finally:
         await exchange.close()
