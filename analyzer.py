@@ -310,6 +310,7 @@ class MarketAnalyzer:
         tolerance: float = 0.003,
         volume_multiplier: float = 1.2,
         long_factor: float = 2.0,
+        market_price: Optional[float] = None,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates support tests, breakdowns, retests, and invalidations."""
         if not candles:
@@ -329,19 +330,8 @@ class MarketAnalyzer:
         previous_status = state.get("status", "NEUTRAL")
         tracked_support = float(state.get("support", support))
         candle_timestamp = int(candle.timestamp)
-
-        if state.get("last_candle_timestamp") == candle_timestamp:
-            signal = Signal(
-                action="HOLD",
-                position=position,
-                pattern=pattern,
-                price=candle.close,
-                reason="Candle already processed; waiting for a new closed candle",
-                status=previous_status,
-                volume_ratio=volume_ratio,
-                volume_status=volume_status,
-            )
-            return signal, state
+        observed_price = float(market_price) if market_price is not None else candle.close
+        is_new_candle = state.get("last_candle_timestamp") != candle_timestamp
 
         action = "HOLD"
         status = "NEUTRAL"
@@ -353,11 +343,19 @@ class MarketAnalyzer:
             "RETEST_REJECTED",
         }
         if active_breakdown:
-            if candle.close >= tracked_support:
+            if previous_status == "BREAKDOWN_WATCH":
+                watch_invalidated = (
+                    observed_price >= tracked_support
+                    if market_price is not None
+                    else is_new_candle and candle.close >= tracked_support
+                )
+            else:
+                watch_invalidated = is_new_candle and candle.close >= tracked_support
+            if watch_invalidated:
                 status = "BREAKDOWN_INVALIDATED"
                 reason = "Price reclaimed support; breakdown signal invalidated"
             elif previous_status == "BREAKDOWN_CONFIRMED":
-                retest_touched = (
+                retest_touched = is_new_candle and (
                     candle.timestamp > int(state.get("breakdown_timestamp", 0))
                     and candle.high >= tracked_support * (1 - tolerance)
                 )
@@ -371,22 +369,28 @@ class MarketAnalyzer:
             elif previous_status == "RETEST_REJECTED":
                 status = previous_status
                 reason = "Retest rejection already signaled; waiting for a new setup"
-            elif pattern == "LONG_RED" and volume_high and downtrend:
+            elif (
+                is_new_candle
+                and candle.close < tracked_support
+                and pattern == "LONG_RED"
+                and volume_high
+                and downtrend
+            ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
                 reason = "Support breakdown confirmed by LONG_RED, high volume, and downtrend"
             else:
                 status = previous_status
                 reason = "Breakdown watch active; confirmation conditions are incomplete"
-        elif candle.close < support:
-            if pattern == "LONG_RED" and volume_high and downtrend:
+        elif observed_price < support:
+            if is_new_candle and candle.close < support and pattern == "LONG_RED" and volume_high and downtrend:
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
                 reason = "Support breakdown confirmed by LONG_RED, high volume, and downtrend"
             else:
                 status = "BREAKDOWN_WATCH"
                 reason = "Price is below support; waiting for LONG_RED, high volume, and downtrend"
-        elif position == "SUPPORT":
+        elif is_new_candle and position == "SUPPORT":
             if pattern == "HAMMER":
                 status = "SUPPORT_BOUNCE_CONFIRMED"
                 action = "STRONG_BUY"
@@ -443,6 +447,7 @@ class MarketAnalyzer:
         tolerance: float = 0.003,
         volume_multiplier: float = 1.2,
         long_factor: float = 2.0,
+        market_price: Optional[float] = None,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates resistance tests, breakouts, retests, and invalidations."""
         if not candles:
@@ -462,19 +467,8 @@ class MarketAnalyzer:
         previous_status = state.get("status", "NEUTRAL")
         tracked_resistance = float(state.get("resistance", resistance))
         candle_timestamp = int(candle.timestamp)
-
-        if state.get("last_candle_timestamp") == candle_timestamp:
-            signal = Signal(
-                action="HOLD",
-                position=position,
-                pattern=pattern,
-                price=candle.close,
-                reason="Candle already processed; waiting for a new closed candle",
-                status=previous_status,
-                volume_ratio=volume_ratio,
-                volume_status=volume_status,
-            )
-            return signal, state
+        observed_price = float(market_price) if market_price is not None else candle.close
+        is_new_candle = state.get("last_candle_timestamp") != candle_timestamp
 
         action = "HOLD"
         status = "NEUTRAL"
@@ -486,11 +480,19 @@ class MarketAnalyzer:
             "RETEST_HELD",
         }
         if active_breakout:
-            if candle.close <= tracked_resistance:
+            if previous_status == "BREAKOUT_WATCH":
+                watch_invalidated = (
+                    observed_price <= tracked_resistance
+                    if market_price is not None
+                    else is_new_candle and candle.close <= tracked_resistance
+                )
+            else:
+                watch_invalidated = is_new_candle and candle.close <= tracked_resistance
+            if watch_invalidated:
                 status = "BREAKOUT_INVALIDATED"
                 reason = "Price fell back below resistance; breakout signal invalidated"
             elif previous_status == "BREAKOUT_CONFIRMED":
-                retest_held = (
+                retest_held = is_new_candle and (
                     candle.timestamp > int(state.get("breakout_timestamp", 0))
                     and candle.low <= tracked_resistance * (1 + tolerance)
                 )
@@ -504,22 +506,28 @@ class MarketAnalyzer:
             elif previous_status == "RETEST_HELD":
                 status = previous_status
                 reason = "Resistance retest already signaled; waiting for a new setup"
-            elif pattern == "LONG_GREEN" and volume_high and uptrend:
+            elif (
+                is_new_candle
+                and candle.close > tracked_resistance
+                and pattern == "LONG_GREEN"
+                and volume_high
+                and uptrend
+            ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
                 reason = "Resistance breakout confirmed by LONG_GREEN, high volume, and uptrend"
             else:
                 status = previous_status
                 reason = "Breakout watch active; confirmation conditions are incomplete"
-        elif candle.close > resistance:
-            if pattern == "LONG_GREEN" and volume_high and uptrend:
+        elif observed_price > resistance:
+            if is_new_candle and candle.close > resistance and pattern == "LONG_GREEN" and volume_high and uptrend:
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
                 reason = "Resistance breakout confirmed by LONG_GREEN, high volume, and uptrend"
             else:
                 status = "BREAKOUT_WATCH"
                 reason = "Price is above resistance; waiting for LONG_GREEN, high volume, and uptrend"
-        elif position == "RESISTANCE":
+        elif is_new_candle and position == "RESISTANCE":
             if pattern == "SHOOTING_STAR":
                 status = "RESISTANCE_REJECTION_CONFIRMED"
                 action = "STRONG_SELL"
@@ -574,6 +582,7 @@ class MarketAnalyzer:
         resistance: float,
         previous_state: Optional[Dict[str, Any]] = None,
         tolerance: float = 0.003,
+        market_price: Optional[float] = None,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Selects support or resistance strategy based on the active level."""
         if not candles:
@@ -582,6 +591,7 @@ class MarketAnalyzer:
         state = dict(previous_state or {})
         previous_level = state.get("level")
         previous_status = state.get("status", "NEUTRAL")
+        observed_price = float(market_price) if market_price is not None else candles[-1].close
         support_statuses = {"BREAKDOWN_WATCH", "BREAKDOWN_CONFIRMED", "RETEST_REJECTED"}
         resistance_statuses = {"BREAKOUT_WATCH", "BREAKOUT_CONFIRMED", "RETEST_HELD"}
 
@@ -589,18 +599,28 @@ class MarketAnalyzer:
             level = "RESISTANCE"
         elif previous_level == "SUPPORT" and previous_status in support_statuses:
             level = "SUPPORT"
-        elif candles[-1].close >= resistance * (1 - tolerance):
+        elif observed_price >= resistance * (1 - tolerance):
             level = "RESISTANCE"
         else:
             level = "SUPPORT"
 
         if level == "RESISTANCE":
             signal, next_state = self.generate_resistance_strategy_signal(
-                candles, support, resistance, previous_state=state, tolerance=tolerance
+                candles,
+                support,
+                resistance,
+                previous_state=state,
+                tolerance=tolerance,
+                market_price=market_price,
             )
         else:
             signal, next_state = self.generate_support_strategy_signal(
-                candles, support, resistance, previous_state=state, tolerance=tolerance
+                candles,
+                support,
+                resistance,
+                previous_state=state,
+                tolerance=tolerance,
+                market_price=market_price,
             )
         next_state["level"] = level
         return signal, next_state

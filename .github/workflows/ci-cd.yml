@@ -12,7 +12,7 @@ permissions:
 jobs:
   unit-tests:
     name: Unit tests
-    if: github.ref == 'refs/heads/develop'
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
 
     steps:
@@ -34,6 +34,7 @@ jobs:
   deploy:
     name: Deploy to VM
     if: github.ref == 'refs/heads/master'
+    needs: unit-tests
     runs-on: ubuntu-latest
     environment: production
 

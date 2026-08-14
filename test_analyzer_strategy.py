@@ -111,6 +111,31 @@ class SupportStrategyTests(unittest.TestCase):
             (signal.entry_price - signal.take_profit) / 2,
         )
 
+    def test_live_breakdown_watch_survives_latest_close_above_support(self):
+        candles = make_downtrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=396.0, high=397.0, low=394.0, close=396.0, volume=100.0)
+        )
+        previous_state = {
+            "level": "SUPPORT",
+            "status": "BREAKDOWN_WATCH",
+            "support": self.support,
+            "resistance": self.resistance,
+            "last_candle_timestamp": 219,
+        }
+
+        signal, state = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            previous_state=previous_state,
+            market_price=390.0,
+        )
+
+        self.assertEqual(signal.status, "BREAKDOWN_WATCH")
+        self.assertEqual(signal.action, "HOLD")
+        self.assertEqual(state["support"], self.support)
+
     def test_hammer_buy_gets_long_trade_levels(self):
         candles = make_downtrend_candles()
         candles.append(
@@ -246,6 +271,31 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(state["level"], "RESISTANCE")
         self.assertLess(signal.stop_loss, signal.entry_price)
         self.assertGreater(signal.take_profit, signal.entry_price)
+
+    def test_live_breakout_watch_survives_latest_close_below_resistance(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=408.0, high=410.0, low=406.0, close=409.0, volume=100.0)
+        )
+        previous_state = {
+            "level": "RESISTANCE",
+            "status": "BREAKOUT_WATCH",
+            "support": self.support,
+            "resistance": self.resistance,
+            "last_candle_timestamp": 219,
+        }
+
+        signal, state = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            previous_state=previous_state,
+            market_price=411.0,
+        )
+
+        self.assertEqual(signal.status, "BREAKOUT_WATCH")
+        self.assertEqual(signal.action, "HOLD")
+        self.assertEqual(state["resistance"], self.resistance)
 
     def test_support_watch_can_switch_to_resistance_breakout(self):
         candles = make_uptrend_candles()
@@ -557,13 +607,91 @@ class DynamicLevelTests(unittest.TestCase):
         support, resistance = resolve_dynamic_levels(
             self.analyzer,
             candles,
-            price=1000.0,
+            price=5.0,
             previous_state=previous_state,
             lookback=10,
         )
 
         self.assertEqual(support, 1.0)
         self.assertEqual(resistance, 11.0)
+
+    def test_levels_stay_locked_while_breakdown_is_being_watched(self):
+        candles = [
+            Candle(
+                timestamp=index,
+                open=index + 0.5,
+                high=index + 1.0,
+                low=float(index),
+                close=index + 0.5,
+                volume=100.0,
+            )
+            for index in range(10)
+        ]
+        previous_state = {
+            "status": "BREAKDOWN_WATCH",
+            "support": 3.0,
+            "resistance": 7.0,
+            "levels_timestamp": 9,
+        }
+        candles.append(
+            Candle(
+                timestamp=10,
+                open=1.5,
+                high=2.0,
+                low=0.5,
+                close=1.0,
+                volume=100.0,
+            )
+        )
+
+        support, resistance = resolve_dynamic_levels(
+            self.analyzer,
+            candles,
+            price=1000.0,
+            previous_state=previous_state,
+            lookback=10,
+        )
+
+        self.assertEqual((support, resistance), (3.0, 7.0))
+
+    def test_previous_levels_are_used_to_detect_first_breakout(self):
+        candles = [
+            Candle(
+                timestamp=index,
+                open=index + 0.5,
+                high=index + 1.0,
+                low=float(index),
+                close=index + 0.5,
+                volume=100.0,
+            )
+            for index in range(10)
+        ]
+        previous_state = {
+            "status": "NEUTRAL",
+            "support": 3.0,
+            "resistance": 7.0,
+            "levels_timestamp": 9,
+        }
+        candles.append(
+            Candle(
+                timestamp=10,
+                open=1.5,
+                high=2.0,
+                low=0.5,
+                close=1.0,
+                volume=100.0,
+            )
+        )
+
+        support, resistance = resolve_dynamic_levels(
+            self.analyzer,
+            candles,
+            price=2.0,
+            previous_state=previous_state,
+            lookback=10,
+        )
+
+        self.assertEqual((support, resistance), (3.0, 7.0))
 
 
 if __name__ == "__main__":

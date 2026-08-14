@@ -182,9 +182,36 @@ def resolve_dynamic_levels(
     previous_state,
     lookback: int = 60,
 ):
-    """Keeps 4h levels stable until a new closed candle is available."""
+    """Keeps levels based on closed-candle data until a new candle is available."""
     if not candles:
         raise ValueError("At least one closed candle is required")
+
+    previous_support = previous_state.get("support")
+    previous_resistance = previous_state.get("resistance")
+    active_level_statuses = {
+        "BREAKDOWN_WATCH",
+        "BREAKDOWN_CONFIRMED",
+        "RETEST_REJECTED",
+        "BREAKOUT_WATCH",
+        "BREAKOUT_CONFIRMED",
+        "RETEST_HELD",
+    }
+    if (
+        previous_state.get("status") in active_level_statuses
+        and previous_support is not None
+        and previous_resistance is not None
+    ):
+        # Keep the level that was actually broken. Recomputing here could move
+        # the reference past the breakout and lose the pending confirmation.
+        return float(previous_support), float(previous_resistance)
+
+    if previous_support is not None and previous_resistance is not None:
+        # Check the live price against the previous levels before allowing a
+        # fresh calculation to replace them. This catches the first breakout
+        # even when the closed candle has already formed a new level.
+        observed_price = float(price)
+        if observed_price < float(previous_support) or observed_price > float(previous_resistance):
+            return float(previous_support), float(previous_resistance)
 
     candle_timestamp = int(candles[-1].timestamp)
     try:
@@ -197,7 +224,10 @@ def resolve_dynamic_levels(
     except (TypeError, ValueError):
         pass
 
-    return analyzer.find_dynamic_levels(candles, price, lookback=lookback)
+    # Live price is only for breakout monitoring. It must not change which
+    # previous support/resistance levels are selected.
+    reference_price = float(candles[-1].close)
+    return analyzer.find_dynamic_levels(candles, reference_price, lookback=lookback)
 
 async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
     logger.info(f"🚀 Starting Analysis for {symbol}...")
@@ -230,16 +260,17 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         state_key = f"{symbol}|{timeframe}"
         previous_state = state_store.get(state_key)
 
-        # Find recent zones and levels relevant to the current price.
+        # Find recent zones and levels relative to the latest closed price.
+        analysis_reference_price = closed_candles[-1].close
         latest_zones = analyzer.find_recent_snd_zones(
             closed_candles,
-            current_price,
+            analysis_reference_price,
             lookback=ANALYSIS_REPORT_LOOKBACK,
             limit=ANALYSIS_REPORT_ITEM_LIMIT,
         )
         latest_resistance_levels, latest_support_levels = analyzer.find_key_levels(
             closed_candles,
-            current_price,
+            analysis_reference_price,
             lookback=ANALYSIS_REPORT_LOOKBACK,
             limit=ANALYSIS_REPORT_ITEM_LIMIT,
         )
@@ -266,7 +297,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
 
         logger.info("-----------------------")
 
-        # 4. Trading Signal (dynamic support/resistance from live data)
+        # 4. Trading Signal (levels from closed data; live price only monitors breaks)
         support, resistance = resolve_dynamic_levels(
             analyzer,
             closed_candles,
@@ -280,6 +311,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             resistance,
             previous_state=previous_state,
             tolerance=zone_tolerance,
+            market_price=current_price,
         )
         next_state["support"] = float(support)
         next_state["resistance"] = float(resistance)
