@@ -25,6 +25,8 @@ FETCH_CANDLE_LIMIT = 400
 ANALYSIS_CANDLE_LIMIT = 250
 ANALYSIS_REPORT_ITEM_LIMIT = 3
 ANALYSIS_REPORT_LOOKBACK = 60
+BREAKOUT_MINIMUM_NEXT_RESISTANCE_ATR = 3.0
+BREAKDOWN_MINIMUM_NEXT_SUPPORT_ATR = 3.0
 TIMEFRAME_DURATIONS = {
     "1m": timedelta(minutes=1),
     "5m": timedelta(minutes=5),
@@ -280,6 +282,36 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             current_price,
             previous_state,
         )
+        active_breakout_statuses = {
+            "BREAKOUT_WATCH",
+            "BREAKOUT_CONFIRMED",
+            "RETEST_HELD",
+        }
+        active_breakdown_statuses = {
+            "BREAKDOWN_WATCH",
+            "BREAKDOWN_CONFIRMED",
+            "RETEST_REJECTED",
+        }
+        next_resistance = previous_state.get("next_resistance")
+        if (
+            previous_state.get("status") not in active_breakout_statuses
+            or next_resistance is None
+        ):
+            next_resistance = analyzer.find_next_resistance(
+                closed_candles,
+                resistance,
+                lookback=ANALYSIS_REPORT_LOOKBACK,
+            )
+        next_support = previous_state.get("next_support")
+        if (
+            previous_state.get("status") not in active_breakdown_statuses
+            or next_support is None
+        ):
+            next_support = analyzer.find_next_support(
+                closed_candles,
+                support,
+                lookback=ANALYSIS_REPORT_LOOKBACK,
+            )
         zone_tolerance = analyzer.calculate_zone_tolerance(closed_candles)
         signal, next_state = analyzer.generate_strategy_signal(
             closed_candles,
@@ -288,6 +320,10 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             previous_state=previous_state,
             tolerance=zone_tolerance,
             market_price=current_price,
+            next_resistance=next_resistance,
+            minimum_next_resistance_atr=BREAKOUT_MINIMUM_NEXT_RESISTANCE_ATR,
+            next_support=next_support,
+            minimum_next_support_atr=BREAKDOWN_MINIMUM_NEXT_SUPPORT_ATR,
         )
         next_state["support"] = float(support)
         next_state["resistance"] = float(resistance)
