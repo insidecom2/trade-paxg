@@ -490,7 +490,7 @@ class SignalSummaryTests(unittest.TestCase):
         self.assertIn("Entry: $390.00", trade_summary)
         self.assertIn("Stop Loss: $400.00", trade_summary)
         self.assertIn("Take Profit: $370.00", trade_summary)
-        self.assertIn("Volume: หนาแน่น (1.50x", trade_summary)
+        self.assertIn("Volume: 1.50x ✅", trade_summary)
         self.assertNotIn("Entry:", hold_summary)
 
     def test_summary_contains_only_trading_signal_details(self):
@@ -513,8 +513,9 @@ class SignalSummaryTests(unittest.TestCase):
             4031.64,
         )
 
-        self.assertIn("=== TRADING SIGNAL ===", summary)
-        self.assertIn("Dynamic Levels: Support=$4026.81 | Resistance=$4043.48", summary)
+        self.assertIn("PAXG 4H | HOLD | BREAKOUT_WATCH", summary)
+        self.assertIn("Support: $4026.81", summary)
+        self.assertIn("Breakout: $4043.48 ❌", summary)
         self.assertNotIn("ANALYSIS REPORT", summary)
         self.assertNotIn("Zone Found:", summary)
 
