@@ -3,6 +3,7 @@ import argparse
 import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from dotenv import load_dotenv
 from exchange_manager import BinanceManager
 from analyzer import MarketAnalyzer
@@ -125,6 +126,32 @@ def prepare_analysis_candles(
     return session_candles[-limit:]
 
 
+def _indicator(value: str, passed: bool, pending: bool = False) -> str:
+    marker = "⏳" if pending else "✅" if passed else "❌"
+    return f"{value} {marker}"
+
+
+def _is_resistance_setup(signal: Signal) -> bool:
+    return signal.position == "RESISTANCE" or signal.status.startswith(
+        ("BREAKOUT", "RETEST_HELD")
+    )
+
+
+def _format_signal_reason(signal: Signal, is_resistance_setup: bool) -> str:
+    if signal.status in {"BREAKOUT_WATCH", "BREAKDOWN_WATCH"}:
+        level_name = "Breakout" if is_resistance_setup else "Breakdown"
+        return (
+            f"{level_name} occurred, but volume and candle confirmation\n"
+            "are still insufficient. Waiting for confirmation/retest."
+        )
+    if signal.status in {"BREAKOUT_CONFIRMED", "BREAKDOWN_CONFIRMED"}:
+        level_name = "Breakout" if is_resistance_setup else "Breakdown"
+        return f"{level_name} confirmed. Waiting for confirmation/retest."
+    if signal.status in {"RETEST_HELD", "RETEST_REJECTED"}:
+        return "Retest confirmed. Signal is ready for the next move."
+    return signal.reason
+
+
 def build_signal_summary(
     symbol: str,
     timeframe: str,
@@ -132,24 +159,99 @@ def build_signal_summary(
     support: float,
     resistance: float,
     current_price: float,
+    next_resistance: Optional[float] = None,
+    next_support: Optional[float] = None,
+    strategy_state: Optional[dict] = None,
 ) -> str:
+    state = strategy_state or {}
+    is_resistance_setup = _is_resistance_setup(signal)
+    level_label = "Breakout" if is_resistance_setup else "Breakdown"
+    level = resistance if is_resistance_setup else support
+    next_level_label = "Next R" if is_resistance_setup else "Next S"
+
+    if is_resistance_setup:
+        trend_is_confirmed = state.get("uptrend") is True
+        trend = "UP" if trend_is_confirmed else "DOWN" if state.get("uptrend") is False else "UNKNOWN"
+        expected_pattern = "LONG_GREEN"
+    else:
+        trend_is_confirmed = state.get("downtrend") is True
+        trend = "DOWN" if trend_is_confirmed else "UP" if state.get("downtrend") is False else "UNKNOWN"
+        expected_pattern = "LONG_RED"
+
+    breakout_is_confirmed = (
+        current_price > level if is_resistance_setup else current_price < level
+    )
+    next_level_value = next_resistance if is_resistance_setup else next_support
+    headroom = None
+    if next_level_value is not None and current_price > 0:
+        headroom = (
+            (next_level_value - current_price) / current_price * 100
+            if is_resistance_setup
+            else (current_price - next_level_value) / current_price * 100
+        )
+    headroom_is_available = headroom is not None and headroom > 0
+
+    volume_is_confirmed = signal.volume_status == "THICK"
+    pattern = signal.pattern or "NONE"
+    pattern_is_confirmed = pattern == expected_pattern
+    retest_is_confirmed = signal.status in {"RETEST_HELD", "RETEST_REJECTED"}
+    retest_is_pending = signal.status in {
+        "BREAKOUT_WATCH",
+        "BREAKOUT_CONFIRMED",
+        "BREAKDOWN_WATCH",
+        "BREAKDOWN_CONFIRMED",
+    }
+    score = sum(
+        (
+            breakout_is_confirmed,
+            headroom_is_available,
+            trend_is_confirmed,
+            volume_is_confirmed,
+            pattern_is_confirmed,
+            retest_is_confirmed,
+        )
+    )
+
+    symbol_name = symbol.split("/", 1)[0].upper()
+    next_level = f"${next_level_value:.2f}" if next_level_value is not None else "N/A"
+    headroom_value = f"{headroom:.2f}%" if headroom is not None else "N/A"
+    if retest_is_confirmed:
+        retest = "HELD" if is_resistance_setup else "REJECTED"
+    elif signal.status.endswith("INVALIDATED"):
+        retest = "INVALID"
+    else:
+        retest = "WAIT"
+
     summary = [
-        "=== TRADING SIGNAL ===",
-        f"Timeframe: {timeframe} | Symbol: {symbol}",
-        f"Action: {signal.action}",
-        f"Status: {signal.status}",
-        f"Position: {signal.position} | Pattern: {signal.pattern or 'NONE'}",
-        f"Dynamic Levels: Support=${support:.2f} | Resistance=${resistance:.2f}",
-        format_volume_summary(signal),
-        f"Last Close: ${signal.price:.2f} | Live Price: ${current_price:.2f}",
-        f"Reason: {signal.reason}",
+        f"{symbol_name} {timeframe.upper()} | {signal.action} | {signal.status}",
+        "",
+        f"Price: ${current_price:.2f}",
+        f"Close: ${signal.price:.2f}",
+        "",
+        f"Support: ${support:.2f}",
+        f"{level_label}: {_indicator(f'${level:.2f}', breakout_is_confirmed)}",
+        f"{next_level_label}: {next_level}",
+        f"Headroom: {_indicator(headroom_value, headroom_is_available)}",
+        "",
+        f"Trend: {_indicator(trend, trend_is_confirmed)}",
+        f"Volume: {_indicator(f'{signal.volume_ratio:.2f}x' if signal.volume_ratio is not None else 'N/A', volume_is_confirmed)}",
+        f"Pattern: {_indicator(pattern, pattern_is_confirmed)}",
+        f"Retest: {_indicator(retest, retest_is_confirmed, retest_is_pending)}",
+        "",
+        f"Score: {score}/6",
+        "",
+        "Reason:",
+        _format_signal_reason(signal, is_resistance_setup),
     ]
     if signal.entry_price is not None:
-        summary.extend([
-            f"Entry: ${signal.entry_price:.2f}",
-            f"Stop Loss: ${signal.stop_loss:.2f}",
-            f"Take Profit: ${signal.take_profit:.2f}",
-        ])
+        summary.extend(
+            [
+                "",
+                f"Entry: ${signal.entry_price:.2f}",
+                f"Stop Loss: ${signal.stop_loss:.2f}" if signal.stop_loss is not None else "Stop Loss: N/A",
+                f"Take Profit: ${signal.take_profit:.2f}" if signal.take_profit is not None else "Take Profit: N/A",
+            ]
+        )
     return "\n".join(summary)
 
 
@@ -330,33 +432,22 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         next_state["levels_timestamp"] = int(closed_candles[-1].timestamp)
         next_state["zone_tolerance"] = round(zone_tolerance, 6)
         state_store.save(state_key, next_state)
-        logger.info("--- TRADING SIGNAL ---")
-        logger.info(f"Timeframe: {timeframe} | Symbol: {symbol}")
-        logger.info(f"Dynamic Levels: Support=${support:.2f} | Resistance=${resistance:.2f}")
-        logger.info(f"Status: {signal.status}")
-        logger.info(f"Position: {signal.position} | Pattern: {signal.pattern or 'NONE'}")
-        logger.info(format_volume_summary(signal))
-        logger.info(f"Action: {signal.action} | Last Close: {signal.price:.2f} | Live Price: {current_price:.2f}")
-        if signal.entry_price is not None:
-            logger.info(
-                f"Trade Levels: Entry=${signal.entry_price:.2f} | "
-                f"SL=${signal.stop_loss:.2f} | TP=${signal.take_profit:.2f}"
-            )
-        logger.info(f"Reason: {signal.reason}")
-        logger.info("-----------------------")
+        signal_summary = build_signal_summary(
+            symbol,
+            timeframe,
+            signal,
+            support,
+            resistance,
+            current_price,
+            next_resistance=next_resistance,
+            next_support=next_support,
+            strategy_state=next_state,
+        )
+        logger.info("\n%s", signal_summary)
 
         # 5. Telegram Notification: every generated trading signal, including HOLD.
         if notifier is not None and should_send_signal_notification(signal):
-            await notifier.send_message(
-                build_signal_summary(
-                    symbol,
-                    timeframe,
-                    signal,
-                    support,
-                    resistance,
-                    current_price,
-                )
-            )
+            await notifier.send_message(signal_summary)
         return True
 
     except Exception as e:
