@@ -432,6 +432,21 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         next_state["levels_timestamp"] = int(closed_candles[-1].timestamp)
         next_state["zone_tolerance"] = round(zone_tolerance, 6)
         state_store.save(state_key, next_state)
+        if signal.entry_price is not None:
+            state_store.save(
+                f"{symbol}|exit_profit",
+                {
+                    "action": signal.action,
+                    "entry_price": float(signal.entry_price),
+                    "stop_loss": (
+                        float(signal.stop_loss) if signal.stop_loss is not None else None
+                    ),
+                    "take_profit": (
+                        float(signal.take_profit) if signal.take_profit is not None else None
+                    ),
+                    "entry_timestamp": int(closed_candles[-1].timestamp),
+                },
+            )
         signal_summary = build_signal_summary(
             symbol,
             timeframe,

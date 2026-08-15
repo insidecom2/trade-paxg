@@ -9,9 +9,9 @@ def should_send_exit_profit_notification(check: ExitProfitCheck) -> bool:
 def build_exit_profit_notification(
     symbol: str, check: ExitProfitCheck
 ) -> str:
-    """Build the standalone Telegram message for the 15m exit-profit check."""
+    """Build the standalone Telegram message for the 1h exit-profit check."""
     message = [
-        "PAXG 15m Exit Profit Check",
+        "PAXG 1h Exit Profit Check",
         f"Symbol: {symbol}",
     ]
     if check.close_1 is None or check.close_2 is None:
@@ -25,12 +25,22 @@ def build_exit_profit_notification(
 
     message.extend([
         "",
-        "Candle #1 (15m)",
+        "Take Profit Level",
+        f"Price: ${check.zone_price:.2f}"
+        if check.zone_price is not None
+        else "Price: N/A",
+        f"Closes at level: {check.occurrences}/{check.lookback}",
+        f"Zone: ${check.resistance_zone_low:.2f} - ${check.resistance_zone_high:.2f}"
+        if check.resistance_zone_low is not None
+        and check.resistance_zone_high is not None
+        else "Zone: N/A",
+        "",
+        "Candle #1 (1h)",
         f"Close #1: ${check.close_1:.2f}",
         f"High #1 : {check.high_1:.1f}",
         f"Volume #1: {check.volume_1:.2f}",
         "",
-        "Candle #2 (15m)",
+        "Candle #2 (1h)",
         f"Close #2: ${check.close_2:.2f}",
         f"High #2 : {check.high_2:.1f}",
         f"Volume #2: {check.volume_2:.2f}",
@@ -38,9 +48,6 @@ def build_exit_profit_notification(
         f"Same Zone: {'YES' if check.same_zone else 'NO'}",
         "",
         f"Touch Count : {check.touch_count}",
-        "",
-        "Resistance Zone",
-        f"{check.resistance_zone_low:.1f} - {check.resistance_zone_high:.1f}",
         "",
         f"Volume Change : {check.volume_change_percent:.1f}%"
         if check.volume_change_percent is not None
