@@ -25,6 +25,14 @@ the independent `4h` strategy every four hours, Monday through Friday, in the
 configured cron timezone. When both schedules overlap, both calculations run.
 Set `TRADING_SYMBOL` in `.env` to change the scheduled symbol.
 
+Market data for both strategy analysis and exit-profit checks can be switched
+between Binance and the existing MySQL price table with `PRICE_SOURCE`.
+Binance is the default. For MySQL, set `MYSQL_HOST`,
+`MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`, and
+`MYSQL_PRICE_TABLE`. MySQL rows are filtered by `f_symbol = 'xauusd'` and use
+`f_price` as the hourly price. The MySQL adapter aggregates hourly prices into
+`1h`, `4h`, or `1d` candles with zero volume.
+
 Trigger an analysis:
 
 ```bash

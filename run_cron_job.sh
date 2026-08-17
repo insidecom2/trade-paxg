@@ -7,7 +7,7 @@ set -eu
 cron_environment=$(tr '\000' '\n' </proc/1/environ)
 while IFS= read -r entry; do
     case "$entry" in
-        TELEGRAM_BOT_TOKEN=*|TELEGRAM_CHAT_ID=*|TRADING_SYMBOL=*|TRADING_TIMEFRAME=*)
+        TELEGRAM_BOT_TOKEN=*|TELEGRAM_CHAT_ID=*|TRADING_SYMBOL=*|TRADING_TIMEFRAME=*|PRICE_SOURCE=*|MYSQL_HOST=*|MYSQL_PORT=*|MYSQL_DATABASE=*|MYSQL_USER=*|MYSQL_PASSWORD=*|MYSQL_PRICE_TABLE=*)
             export "$entry"
             ;;
     esac
