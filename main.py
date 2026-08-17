@@ -165,9 +165,7 @@ def build_signal_summary(
 ) -> str:
     state = strategy_state or {}
     is_resistance_setup = _is_resistance_setup(signal)
-    level_label = "Breakout" if is_resistance_setup else "Breakdown"
     level = resistance if is_resistance_setup else support
-    next_level_label = "Next R" if is_resistance_setup else "Next S"
 
     if is_resistance_setup:
         trend_is_confirmed = state.get("uptrend") is True
@@ -213,7 +211,16 @@ def build_signal_summary(
     )
 
     symbol_name = symbol.split("/", 1)[0].upper()
-    next_level = f"${next_level_value:.2f}" if next_level_value is not None else "N/A"
+    if is_resistance_setup:
+        resistance_line = f"Resistance: {_indicator(f'${resistance:.2f}', breakout_is_confirmed)}"
+        support_line = f"Support: ${support:.2f}"
+    else:
+        resistance_line = f"Resistance: ${resistance:.2f}"
+        support_line = f"Support: {_indicator(f'${support:.2f}', breakout_is_confirmed)}"
+    next_resistance_text = (
+        f"${next_resistance:.2f}" if next_resistance is not None else "N/A"
+    )
+    next_support_text = f"${next_support:.2f}" if next_support is not None else "N/A"
     headroom_value = f"{headroom:.2f}%" if headroom is not None else "N/A"
     if retest_is_confirmed:
         retest = "HELD" if is_resistance_setup else "REJECTED"
@@ -228,9 +235,10 @@ def build_signal_summary(
         f"Price: ${current_price:.2f}",
         f"Close: ${signal.price:.2f}",
         "",
-        f"Support: ${support:.2f}",
-        f"{level_label}: {_indicator(f'${level:.2f}', breakout_is_confirmed)}",
-        f"{next_level_label}: {next_level}",
+        resistance_line,
+        f"Next Resistance: {next_resistance_text}",
+        support_line,
+        f"Next Support: {next_support_text}",
         f"Headroom: {_indicator(headroom_value, headroom_is_available)}",
         "",
         f"Trend: {_indicator(trend, trend_is_confirmed)}",
