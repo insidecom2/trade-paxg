@@ -36,9 +36,10 @@ class SignalSummaryTests(unittest.TestCase):
                     "Price: $4372.87",
                     "Close: $4369.61",
                     "",
+                    "Resistance: $4358.91 ✅",
+                    "Next Resistance: $4410.00",
                     "Support: $4313.81",
-                    "Breakout: $4358.91 ✅",
-                    "Next R: $4410.00",
+                    "Next Support: N/A",
                     "Headroom: 0.85% ✅",
                     "",
                     "Trend: UP ✅",
@@ -73,7 +74,8 @@ class SignalSummaryTests(unittest.TestCase):
             current_price=100.0,
         )
 
-        self.assertIn("Next S: N/A", message)
+        self.assertIn("Next Support: N/A", message)
+        self.assertIn("Next Resistance: N/A", message)
         self.assertIn("Headroom: N/A ❌", message)
         self.assertIn("Volume: N/A ❌", message)
 

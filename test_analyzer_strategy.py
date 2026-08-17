@@ -515,7 +515,7 @@ class SignalSummaryTests(unittest.TestCase):
 
         self.assertIn("PAXG 4H | HOLD | BREAKOUT_WATCH", summary)
         self.assertIn("Support: $4026.81", summary)
-        self.assertIn("Breakout: $4043.48 ❌", summary)
+        self.assertIn("Resistance: $4043.48 ❌", summary)
         self.assertNotIn("ANALYSIS REPORT", summary)
         self.assertNotIn("Zone Found:", summary)
 
