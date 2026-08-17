@@ -27,3 +27,8 @@ class Signal(BaseModel):
     take_profit: Optional[float] = None
     volume_ratio: Optional[float] = None
     volume_status: Optional[str] = None  # 'THICK', 'NORMAL', 'THIN', 'UNKNOWN'
+    bband_le: Optional[bool] = None
+    bband_se: Optional[bool] = None
+    bband_upper: Optional[float] = None
+    bband_middle: Optional[float] = None
+    bband_lower: Optional[float] = None

@@ -383,15 +383,16 @@ async def run_standalone(symbol: str = "PAXG/USDT", lookback: int = 4) -> None:
 
     from dotenv import load_dotenv
 
-    from exchange_manager import BinanceManager
+    from exchange_manager import create_market_data_manager
     from exit_profit_notification import build_exit_profit_notification
     from trading_state import TradingStateStore
 
     load_dotenv()
     logging.basicConfig(level=logging.INFO)
-    exchange = BinanceManager()
+    market_data = None
     try:
-        candles = await exchange.fetch_ohlcv(symbol, "1h", limit=250)
+        market_data = create_market_data_manager()
+        candles = await market_data.fetch_ohlcv(symbol, "1h", limit=250)
         closed_candles = candles[:-1] if len(candles) > 1 else candles
         store = TradingStateStore()
         key = f"{symbol}|exit_profit"
@@ -405,7 +406,8 @@ async def run_standalone(symbol: str = "PAXG/USDT", lookback: int = 4) -> None:
         else:
             print("Exit Profit Alert: NONE")
     finally:
-        await exchange.close()
+        if market_data is not None:
+            await market_data.close()
 
 
 if __name__ == "__main__":

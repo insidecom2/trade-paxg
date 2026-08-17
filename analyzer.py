@@ -287,6 +287,53 @@ class MarketAnalyzer:
         return candles[-1].volume / average_volume
 
     @staticmethod
+    def bollinger_signal(
+        candles: List[Candle], period: int = 20, standard_deviations: float = 2.0
+    ) -> Dict[str, Any]:
+        """Detects a closed-candle cross through a Bollinger outer band.
+
+        BBandLE is a cross from at-or-below the previous upper band to above
+        the current upper band. BBandSE is the inverse cross through the lower
+        band. The returned band values are for the latest closed candle.
+        """
+        if period < 2:
+            raise ValueError("Bollinger period must be at least 2")
+        if standard_deviations <= 0:
+            raise ValueError("Bollinger standard deviations must be positive")
+
+        empty = {
+            "le": None,
+            "se": None,
+            "upper": None,
+            "middle": None,
+            "lower": None,
+        }
+        if len(candles) < period + 1:
+            return empty
+
+        closes = np.asarray([float(candle.close) for candle in candles], dtype=float)
+
+        def bands_at(end_index: int) -> Tuple[float, float, float]:
+            window = closes[end_index - period + 1 : end_index + 1]
+            middle = float(np.mean(window))
+            deviation = float(np.std(window))
+            upper = middle + standard_deviations * deviation
+            lower = middle - standard_deviations * deviation
+            return upper, middle, lower
+
+        previous_upper, _, previous_lower = bands_at(len(closes) - 2)
+        upper, middle, lower = bands_at(len(closes) - 1)
+        previous_close = float(closes[-2])
+        current_close = float(closes[-1])
+        return {
+            "le": previous_close <= previous_upper and current_close > upper,
+            "se": previous_close >= previous_lower and current_close < lower,
+            "upper": upper,
+            "middle": middle,
+            "lower": lower,
+        }
+
+    @staticmethod
     def classify_volume(
         volume_ratio: Optional[float],
         high_threshold: float = 1.2,
@@ -349,6 +396,7 @@ class MarketAnalyzer:
         market_price: Optional[float] = None,
         next_support: Optional[float] = None,
         minimum_next_support_atr: float = 3.0,
+        bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates support tests, breakdowns, retests, and invalidations."""
         if not candles:
@@ -363,6 +411,9 @@ class MarketAnalyzer:
         volume_high = volume_ratio is not None and volume_ratio >= volume_multiplier
         volume_status = self.classify_volume(volume_ratio, high_threshold=volume_multiplier)
         downtrend = self.is_downtrend(candles)
+        bband = self.bollinger_signal(candles) if bband_enabled else {}
+        bband_se = bband.get("se") is True
+        bband_requirement = ", and BBandSE" if bband_enabled else ""
 
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
@@ -433,18 +484,19 @@ class MarketAnalyzer:
                 and volume_high
                 and downtrend
                 and next_support_far_enough
+                and (not bband_enabled or bband_se)
             ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
                 reason = (
                     "Support breakdown confirmed by LONG_RED, high volume, downtrend, "
-                    "and sufficient distance to next support"
+                    f"sufficient distance to next support{bband_requirement}"
                 )
             else:
                 status = previous_status
                 reason = (
                     "Breakdown watch active; waiting for LONG_RED, high volume, downtrend, "
-                    "and sufficient distance to next support"
+                    f"sufficient distance to next support{bband_requirement}"
                 )
         elif observed_price < support:
             if (
@@ -454,18 +506,19 @@ class MarketAnalyzer:
                 and volume_high
                 and downtrend
                 and next_support_far_enough
+                and (not bband_enabled or bband_se)
             ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
                 reason = (
                     "Support breakdown confirmed by LONG_RED, high volume, downtrend, "
-                    "and sufficient distance to next support"
+                    f"sufficient distance to next support{bband_requirement}"
                 )
             else:
                 status = "BREAKDOWN_WATCH"
                 reason = (
                     "Price is below support; waiting for LONG_RED, high volume, downtrend, "
-                    "and sufficient distance to next support"
+                    f"sufficient distance to next support{bband_requirement}"
                 )
         elif is_new_candle and position == "SUPPORT":
             if pattern == "HAMMER":
@@ -517,6 +570,11 @@ class MarketAnalyzer:
             take_profit=take_profit,
             volume_ratio=volume_ratio,
             volume_status=volume_status,
+            bband_le=bband.get("le"),
+            bband_se=bband.get("se"),
+            bband_upper=bband.get("upper"),
+            bband_middle=bband.get("middle"),
+            bband_lower=bband.get("lower"),
         )
         return signal, next_state
 
@@ -532,6 +590,7 @@ class MarketAnalyzer:
         market_price: Optional[float] = None,
         next_resistance: Optional[float] = None,
         minimum_next_resistance_atr: float = 3.0,
+        bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates resistance tests, breakouts, retests, and invalidations."""
         if not candles:
@@ -546,6 +605,9 @@ class MarketAnalyzer:
         volume_high = volume_ratio is not None and volume_ratio >= volume_multiplier
         volume_status = self.classify_volume(volume_ratio, high_threshold=volume_multiplier)
         uptrend = self.is_uptrend(candles)
+        bband = self.bollinger_signal(candles) if bband_enabled else {}
+        bband_le = bband.get("le") is True
+        bband_requirement = ", and BBandLE" if bband_enabled else ""
 
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
@@ -616,18 +678,19 @@ class MarketAnalyzer:
                 and volume_high
                 and uptrend
                 and next_resistance_far_enough
+                and (not bband_enabled or bband_le)
             ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
                 reason = (
                     "Resistance breakout confirmed by LONG_GREEN, high volume, uptrend, "
-                    "and sufficient distance to next resistance"
+                    f"sufficient distance to next resistance{bband_requirement}"
                 )
             else:
                 status = previous_status
                 reason = (
                     "Breakout watch active; waiting for LONG_GREEN, high volume, uptrend, "
-                    "and sufficient distance to next resistance"
+                    f"sufficient distance to next resistance{bband_requirement}"
                 )
         elif observed_price > resistance:
             if (
@@ -637,18 +700,19 @@ class MarketAnalyzer:
                 and volume_high
                 and uptrend
                 and next_resistance_far_enough
+                and (not bband_enabled or bband_le)
             ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
                 reason = (
                     "Resistance breakout confirmed by LONG_GREEN, high volume, uptrend, "
-                    "and sufficient distance to next resistance"
+                    f"sufficient distance to next resistance{bband_requirement}"
                 )
             else:
                 status = "BREAKOUT_WATCH"
                 reason = (
                     "Price is above resistance; waiting for LONG_GREEN, high volume, uptrend, "
-                    "and sufficient distance to next resistance"
+                    f"sufficient distance to next resistance{bband_requirement}"
                 )
         elif is_new_candle and position == "RESISTANCE":
             if pattern == "SHOOTING_STAR":
@@ -700,6 +764,11 @@ class MarketAnalyzer:
             take_profit=take_profit,
             volume_ratio=volume_ratio,
             volume_status=volume_status,
+            bband_le=bband.get("le"),
+            bband_se=bband.get("se"),
+            bband_upper=bband.get("upper"),
+            bband_middle=bband.get("middle"),
+            bband_lower=bband.get("lower"),
         )
         return signal, next_state
 
@@ -715,6 +784,7 @@ class MarketAnalyzer:
         minimum_next_resistance_atr: float = 3.0,
         next_support: Optional[float] = None,
         minimum_next_support_atr: float = 3.0,
+        bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Selects support or resistance strategy based on the active level."""
         if not candles:
@@ -746,6 +816,7 @@ class MarketAnalyzer:
                 market_price=market_price,
                 next_resistance=next_resistance,
                 minimum_next_resistance_atr=minimum_next_resistance_atr,
+                bband_enabled=bband_enabled,
             )
         else:
             signal, next_state = self.generate_support_strategy_signal(
@@ -757,6 +828,7 @@ class MarketAnalyzer:
                 market_price=market_price,
                 next_support=next_support,
                 minimum_next_support_atr=minimum_next_support_atr,
+                bband_enabled=bband_enabled,
             )
         next_state["level"] = level
         return signal, next_state

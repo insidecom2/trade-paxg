@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from dotenv import load_dotenv
-from exchange_manager import BinanceManager
+from exchange_manager import create_market_data_manager
 from analyzer import MarketAnalyzer
 from telegram_notifier import TelegramNotifier
 from trading_state import TradingStateStore
@@ -131,6 +131,12 @@ def _indicator(value: str, passed: bool, pending: bool = False) -> str:
     return f"{value} {marker}"
 
 
+def _optional_indicator(value: Optional[bool]) -> str:
+    if value is None:
+        return "N/A"
+    return "✅" if value else "❌"
+
+
 def _is_resistance_setup(signal: Signal) -> bool:
     return signal.position == "RESISTANCE" or signal.status.startswith(
         ("BREAKOUT", "RETEST_HELD")
@@ -199,6 +205,10 @@ def build_signal_summary(
         "BREAKDOWN_WATCH",
         "BREAKDOWN_CONFIRMED",
     }
+    bband_enabled = signal.bband_le is not None or signal.bband_se is not None
+    bband_confirmed = (
+        signal.bband_le if is_resistance_setup else signal.bband_se
+    ) is True
     score = sum(
         (
             breakout_is_confirmed,
@@ -209,6 +219,8 @@ def build_signal_summary(
             retest_is_confirmed,
         )
     )
+    if bband_enabled:
+        score += bband_confirmed
 
     symbol_name = symbol.split("/", 1)[0].upper()
     if is_resistance_setup:
@@ -246,11 +258,26 @@ def build_signal_summary(
         f"Pattern: {_indicator(pattern, pattern_is_confirmed)}",
         f"Retest: {_indicator(retest, retest_is_confirmed, retest_is_pending)}",
         "",
-        f"Score: {score}/6",
+        f"Score: {score}/{'7' if bband_enabled else '6'}",
         "",
         "Reason:",
         _format_signal_reason(signal, is_resistance_setup),
     ]
+    if bband_enabled:
+        bband_lines = [
+            f"BBandLE: {_optional_indicator(signal.bband_le)}",
+            f"BBandSE: {_optional_indicator(signal.bband_se)}",
+        ]
+        if signal.bband_upper is not None:
+            bband_lines.append(
+                "BBands: "
+                f"Upper ${signal.bband_upper:.2f} | "
+                f"Middle ${signal.bband_middle:.2f} | "
+                f"Lower ${signal.bband_lower:.2f}"
+            )
+        retest_line = _indicator(retest, retest_is_confirmed, retest_is_pending)
+        insert_at = summary.index(f"Retest: {retest_line}")
+        summary[insert_at:insert_at] = bband_lines
     if signal.entry_price is not None:
         summary.extend(
             [
@@ -321,11 +348,14 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
     logger.info(f"🚀 Starting Analysis for {symbol}...")
 
     notifier = TelegramNotifier.from_env()
-    exchange = BinanceManager()
+    market_data = None
     try:
+        market_data = create_market_data_manager()
         # 1. Data Acquisition
-        current_price = await exchange.fetch_current_price(symbol)
-        candles = await exchange.fetch_ohlcv(symbol, timeframe, limit=FETCH_CANDLE_LIMIT)
+        current_price = await market_data.fetch_current_price(symbol)
+        candles = await market_data.fetch_ohlcv(
+            symbol, timeframe, limit=FETCH_CANDLE_LIMIT
+        )
         observed_interval = validate_candle_timeframe(candles, timeframe)
         logger.info(f"Successfully fetched {len(candles)} candles.")
         logger.info(
@@ -434,6 +464,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             minimum_next_resistance_atr=BREAKOUT_MINIMUM_NEXT_RESISTANCE_ATR,
             next_support=next_support,
             minimum_next_support_atr=BREAKDOWN_MINIMUM_NEXT_SUPPORT_ATR,
+            bband_enabled=timeframe == "4h",
         )
         next_state["support"] = float(support)
         next_state["resistance"] = float(resistance)
@@ -477,7 +508,8 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         logger.critical(f"System Failure: {e}", exc_info=True)
         return False
     finally:
-        await exchange.close()
+        if market_data is not None:
+            await market_data.close()
 
 if __name__ == "__main__":
     args = parse_args()

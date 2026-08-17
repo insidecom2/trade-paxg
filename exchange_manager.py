@@ -1,9 +1,79 @@
-import ccxt.async_support as ccxt
+import asyncio
 import logging
-from typing import List, Optional
+import math
+import os
+import re
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, List, Optional
+
+import ccxt.async_support as ccxt
 from models import Candle
 
+try:
+    import pymysql
+except ImportError:  # pragma: no cover - exercised when the optional dependency is absent
+    pymysql = None
+
 logger = logging.getLogger(__name__)
+
+MYSQL_SYMBOL = "xauusd"
+MYSQL_TIMEFRAME_HOURS = {
+    "1h": 1,
+    "4h": 4,
+    "1d": 24,
+}
+SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(value: str, setting_name: str) -> str:
+    if not SAFE_IDENTIFIER.fullmatch(value):
+        raise ValueError(
+            f"{setting_name} must contain only letters, numbers, and underscores"
+        )
+    return value
+
+
+def _datetime_to_timestamp_ms(value: Any) -> int:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        raise ValueError("f_datetime must be a datetime or ISO-8601 string")
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _price_points_to_candles(
+    points: list[tuple[int, float]], timeframe: str
+) -> list[Candle]:
+    """Aggregate hourly MySQL prices into the requested strategy timeframe."""
+    hours = MYSQL_TIMEFRAME_HOURS.get(timeframe)
+    if hours is None:
+        raise ValueError(
+            "MySQL price data is hourly and supports only 1h, 4h, and 1d timeframes"
+        )
+
+    bucket_size_ms = hours * 60 * 60 * 1000
+    buckets: dict[int, list[float]] = {}
+    for timestamp, price in points:
+        bucket_start = timestamp - (timestamp % bucket_size_ms)
+        buckets.setdefault(bucket_start, []).append(price)
+
+    return [
+        Candle(
+            timestamp=timestamp,
+            open=prices[0],
+            high=max(prices),
+            low=min(prices),
+            close=prices[-1],
+            volume=0.0,
+        )
+        for timestamp, prices in sorted(buckets.items())
+    ]
 
 class BinanceManager:
     """
@@ -72,3 +142,115 @@ class BinanceManager:
             except Exception as e:
                 logger.warning(f"Error closing Binance session: {e}")
             self.exchange = None
+
+
+class MySQLManager:
+    """Reads hourly XAUUSD prices from an existing MySQL table."""
+
+    def __init__(self):
+        self.host = self._required_setting("MYSQL_HOST")
+        self.port = self._port_setting()
+        self.database = self._required_setting("MYSQL_DATABASE")
+        self.user = self._required_setting("MYSQL_USER")
+        self.password = os.getenv("MYSQL_PASSWORD", "")
+        self.table = _validate_identifier(
+            self._required_setting("MYSQL_PRICE_TABLE"), "MYSQL_PRICE_TABLE"
+        )
+
+    @staticmethod
+    def _required_setting(name: str) -> str:
+        value = os.getenv(name, "").strip()
+        if not value:
+            raise ValueError(f"{name} is required when PRICE_SOURCE=mysql")
+        return value
+
+    @staticmethod
+    def _port_setting() -> int:
+        value = os.getenv("MYSQL_PORT", "3306").strip()
+        try:
+            port = int(value)
+        except ValueError as exc:
+            raise ValueError("MYSQL_PORT must be an integer") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError("MYSQL_PORT must be between 1 and 65535")
+        return port
+
+    def _fetch_rows_sync(self, limit: int) -> list[dict[str, Any]]:
+        if pymysql is None:
+            raise RuntimeError(
+                "PyMySQL is required for PRICE_SOURCE=mysql; install project dependencies"
+            )
+
+        query = (
+            "SELECT f_price, f_datetime "
+            f"FROM `{self.table}` "
+            "WHERE LOWER(f_symbol) = %s "
+            "ORDER BY f_datetime DESC LIMIT %s"
+        )
+        connection = pymysql.connect(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            database=self.database,
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=10,
+            read_timeout=10,
+            write_timeout=10,
+        )
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(query, (MYSQL_SYMBOL, limit))
+                return list(cursor.fetchall())
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _row_to_point(row: dict[str, Any]) -> tuple[int, float]:
+        if row.get("f_price") is None or row.get("f_datetime") is None:
+            raise ValueError("MySQL price rows must contain f_price and f_datetime")
+
+        price = float(Decimal(str(row["f_price"])))
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError("MySQL f_price must be a finite positive number")
+        return _datetime_to_timestamp_ms(row["f_datetime"]), price
+
+    async def _fetch_points(self, limit: int) -> list[tuple[int, float]]:
+        rows = await asyncio.to_thread(self._fetch_rows_sync, limit)
+        points = [self._row_to_point(row) for row in rows]
+        return sorted(points)
+
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, limit: int = 100
+    ) -> List[Candle]:
+        del symbol  # The existing source table is explicitly for f_symbol=xauusd.
+        hours = MYSQL_TIMEFRAME_HOURS.get(timeframe)
+        if hours is None:
+            raise ValueError(
+                "MySQL price data is hourly and supports only 1h, 4h, and 1d timeframes"
+            )
+        source_limit = max(limit * hours + hours, hours + 1)
+        points = await self._fetch_points(source_limit)
+        candles = _price_points_to_candles(points, timeframe)
+        if not candles:
+            raise LookupError(f"No MySQL prices found for f_symbol={MYSQL_SYMBOL}")
+        return candles[-limit:]
+
+    async def fetch_current_price(self, symbol: str) -> float:
+        del symbol
+        points = await self._fetch_points(1)
+        if not points:
+            raise LookupError(f"No MySQL prices found for f_symbol={MYSQL_SYMBOL}")
+        return points[-1][1]
+
+    async def close(self) -> None:
+        """Connections are short-lived per query, so there is nothing to close."""
+
+
+def create_market_data_manager():
+    source = os.getenv("PRICE_SOURCE", "binance").strip().lower()
+    if source == "binance":
+        return BinanceManager()
+    if source == "mysql":
+        return MySQLManager()
+    raise ValueError("PRICE_SOURCE must be either 'binance' or 'mysql'")

@@ -56,6 +56,29 @@ class SignalSummaryTests(unittest.TestCase):
             ),
         )
 
+    def test_formats_bollinger_status_for_enabled_strategy(self):
+        signal = Signal(
+            action="HOLD",
+            position="RESISTANCE",
+            price=110.0,
+            reason="waiting",
+            status="BREAKOUT_WATCH",
+            bband_le=False,
+            bband_se=False,
+            bband_upper=108.0,
+            bband_middle=100.0,
+            bband_lower=92.0,
+        )
+
+        message = build_signal_summary(
+            "PAXG/USDT", "4h", signal, 90.0, 100.0, 110.0, next_resistance=130.0
+        )
+
+        self.assertIn("BBandLE: ❌", message)
+        self.assertIn("BBandSE: ❌", message)
+        self.assertIn("BBands: Upper $108.00 | Middle $100.00 | Lower $92.00", message)
+        self.assertIn("Score: 2/7", message)
+
     def test_missing_next_resistance_and_volume_are_safe(self):
         signal = Signal(
             action="HOLD",

@@ -34,6 +34,70 @@ class TimeframeValidationTests(unittest.TestCase):
             validate_candle_timeframe(candles, "1h")
 
 
+class BollingerSignalTests(unittest.TestCase):
+    @staticmethod
+    def flat_candles(close: float, count: int = 20):
+        return [
+            Candle(
+                timestamp=index,
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=100.0,
+            )
+            for index in range(count)
+        ]
+
+    def setUp(self):
+        self.analyzer = MarketAnalyzer()
+
+    def test_bband_le_requires_cross_above_upper_band(self):
+        candles = self.flat_candles(100.0)
+        candles.append(
+            Candle(
+                timestamp=20,
+                open=100.0,
+                high=105.0,
+                low=100.0,
+                close=105.0,
+                volume=100.0,
+            )
+        )
+
+        result = self.analyzer.bollinger_signal(candles)
+
+        self.assertTrue(result["le"])
+        self.assertFalse(result["se"])
+        self.assertLess(result["upper"], candles[-1].close)
+
+    def test_bband_se_requires_cross_below_lower_band(self):
+        candles = self.flat_candles(100.0)
+        candles.append(
+            Candle(
+                timestamp=20,
+                open=100.0,
+                high=100.0,
+                low=95.0,
+                close=95.0,
+                volume=100.0,
+            )
+        )
+
+        result = self.analyzer.bollinger_signal(candles)
+
+        self.assertFalse(result["le"])
+        self.assertTrue(result["se"])
+        self.assertGreater(result["lower"], candles[-1].close)
+
+    def test_bollinger_signal_is_unavailable_without_previous_window(self):
+        result = self.analyzer.bollinger_signal(self.flat_candles(100.0, count=20))
+
+        self.assertIsNone(result["le"])
+        self.assertIsNone(result["se"])
+        self.assertIsNone(result["upper"])
+
+
 def make_downtrend_candles(count=220):
     candles = []
     for index in range(count):
@@ -113,6 +177,56 @@ class SupportStrategyTests(unittest.TestCase):
             signal.stop_loss - signal.entry_price,
             (signal.entry_price - signal.take_profit) / 2,
         )
+
+    def test_bband_se_is_required_for_4h_breakdown_confirmation(self):
+        candles = make_downtrend_candles()
+        candles.append(
+            Candle(
+                timestamp=220,
+                open=390.0,
+                high=390.0,
+                low=370.0,
+                close=370.0,
+                volume=200.0,
+            )
+        )
+
+        signal, _ = self.analyzer.generate_support_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_support=300.0,
+            bband_enabled=True,
+        )
+
+        self.assertEqual(signal.status, "BREAKDOWN_CONFIRMED")
+        self.assertEqual(signal.action, "SELL")
+        self.assertTrue(signal.bband_se)
+
+    def test_breakdown_waits_for_bband_se_when_other_conditions_pass(self):
+        candles = make_downtrend_candles()
+        candles.append(
+            Candle(
+                timestamp=220,
+                open=400.0,
+                high=400.0,
+                low=390.0,
+                close=390.0,
+                volume=200.0,
+            )
+        )
+
+        signal, _ = self.analyzer.generate_support_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_support=300.0,
+            bband_enabled=True,
+        )
+
+        self.assertEqual(signal.status, "BREAKDOWN_WATCH")
+        self.assertEqual(signal.action, "HOLD")
+        self.assertFalse(signal.bband_se)
 
     def test_breakdown_waits_when_next_support_is_missing_or_too_close(self):
         candles = make_downtrend_candles()
@@ -296,6 +410,56 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(state["level"], "RESISTANCE")
         self.assertLess(signal.stop_loss, signal.entry_price)
         self.assertGreater(signal.take_profit, signal.entry_price)
+
+    def test_bband_le_is_required_for_4h_breakout_confirmation(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(
+                timestamp=220,
+                open=410.0,
+                high=430.0,
+                low=410.0,
+                close=430.0,
+                volume=200.0,
+            )
+        )
+
+        signal, _ = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=410.0,
+            next_resistance=500.0,
+            bband_enabled=True,
+        )
+
+        self.assertEqual(signal.status, "BREAKOUT_CONFIRMED")
+        self.assertEqual(signal.action, "BUY")
+        self.assertTrue(signal.bband_le)
+
+    def test_breakout_waits_for_bband_le_when_other_conditions_pass(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(
+                timestamp=220,
+                open=400.0,
+                high=410.0,
+                low=400.0,
+                close=410.0,
+                volume=200.0,
+            )
+        )
+
+        signal, _ = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=405.0,
+            next_resistance=500.0,
+            bband_enabled=True,
+        )
+
+        self.assertEqual(signal.status, "BREAKOUT_WATCH")
+        self.assertEqual(signal.action, "HOLD")
+        self.assertFalse(signal.bband_le)
 
     def test_breakout_waits_when_next_resistance_is_missing_or_too_close(self):
         candles = make_uptrend_candles()
