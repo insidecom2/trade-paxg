@@ -32,3 +32,6 @@ class Signal(BaseModel):
     bband_upper: Optional[float] = None
     bband_middle: Optional[float] = None
     bband_lower: Optional[float] = None
+    bband_prev_close: Optional[float] = None
+    bband_prev_upper: Optional[float] = None
+    bband_prev_lower: Optional[float] = None

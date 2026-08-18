@@ -307,6 +307,9 @@ class MarketAnalyzer:
             "upper": None,
             "middle": None,
             "lower": None,
+            "prev_close": None,
+            "prev_upper": None,
+            "prev_lower": None,
         }
         if len(candles) < period + 1:
             return empty
@@ -331,6 +334,9 @@ class MarketAnalyzer:
             "upper": upper,
             "middle": middle,
             "lower": lower,
+            "prev_close": previous_close,
+            "prev_upper": previous_upper,
+            "prev_lower": previous_lower,
         }
 
     @staticmethod
@@ -412,8 +418,6 @@ class MarketAnalyzer:
         volume_status = self.classify_volume(volume_ratio, high_threshold=volume_multiplier)
         downtrend = self.is_downtrend(candles)
         bband = self.bollinger_signal(candles) if bband_enabled else {}
-        bband_se = bband.get("se") is True
-        bband_requirement = ", and BBandSE" if bband_enabled else ""
 
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
@@ -484,19 +488,18 @@ class MarketAnalyzer:
                 and volume_high
                 and downtrend
                 and next_support_far_enough
-                and (not bband_enabled or bband_se)
             ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
                 reason = (
                     "Support breakdown confirmed by LONG_RED, high volume, downtrend, "
-                    f"sufficient distance to next support{bband_requirement}"
+                    "sufficient distance to next support"
                 )
             else:
                 status = previous_status
                 reason = (
                     "Breakdown watch active; waiting for LONG_RED, high volume, downtrend, "
-                    f"sufficient distance to next support{bband_requirement}"
+                    "sufficient distance to next support"
                 )
         elif observed_price < support:
             if (
@@ -506,19 +509,18 @@ class MarketAnalyzer:
                 and volume_high
                 and downtrend
                 and next_support_far_enough
-                and (not bband_enabled or bband_se)
             ):
                 status = "BREAKDOWN_CONFIRMED"
                 action = "SELL"
                 reason = (
                     "Support breakdown confirmed by LONG_RED, high volume, downtrend, "
-                    f"sufficient distance to next support{bband_requirement}"
+                    "sufficient distance to next support"
                 )
             else:
                 status = "BREAKDOWN_WATCH"
                 reason = (
                     "Price is below support; waiting for LONG_RED, high volume, downtrend, "
-                    f"sufficient distance to next support{bband_requirement}"
+                    "sufficient distance to next support"
                 )
         elif is_new_candle and position == "SUPPORT":
             if pattern == "HAMMER":
@@ -575,6 +577,9 @@ class MarketAnalyzer:
             bband_upper=bband.get("upper"),
             bband_middle=bband.get("middle"),
             bband_lower=bband.get("lower"),
+            bband_prev_close=bband.get("prev_close"),
+            bband_prev_upper=bband.get("prev_upper"),
+            bband_prev_lower=bband.get("prev_lower"),
         )
         return signal, next_state
 
@@ -606,8 +611,6 @@ class MarketAnalyzer:
         volume_status = self.classify_volume(volume_ratio, high_threshold=volume_multiplier)
         uptrend = self.is_uptrend(candles)
         bband = self.bollinger_signal(candles) if bband_enabled else {}
-        bband_le = bband.get("le") is True
-        bband_requirement = ", and BBandLE" if bband_enabled else ""
 
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
@@ -678,19 +681,18 @@ class MarketAnalyzer:
                 and volume_high
                 and uptrend
                 and next_resistance_far_enough
-                and (not bband_enabled or bband_le)
             ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
                 reason = (
                     "Resistance breakout confirmed by LONG_GREEN, high volume, uptrend, "
-                    f"sufficient distance to next resistance{bband_requirement}"
+                    "sufficient distance to next resistance"
                 )
             else:
                 status = previous_status
                 reason = (
                     "Breakout watch active; waiting for LONG_GREEN, high volume, uptrend, "
-                    f"sufficient distance to next resistance{bband_requirement}"
+                    "sufficient distance to next resistance"
                 )
         elif observed_price > resistance:
             if (
@@ -700,19 +702,18 @@ class MarketAnalyzer:
                 and volume_high
                 and uptrend
                 and next_resistance_far_enough
-                and (not bband_enabled or bband_le)
             ):
                 status = "BREAKOUT_CONFIRMED"
                 action = "BUY"
                 reason = (
                     "Resistance breakout confirmed by LONG_GREEN, high volume, uptrend, "
-                    f"sufficient distance to next resistance{bband_requirement}"
+                    "sufficient distance to next resistance"
                 )
             else:
                 status = "BREAKOUT_WATCH"
                 reason = (
                     "Price is above resistance; waiting for LONG_GREEN, high volume, uptrend, "
-                    f"sufficient distance to next resistance{bband_requirement}"
+                    f"sufficient distance to next resistance"
                 )
         elif is_new_candle and position == "RESISTANCE":
             if pattern == "SHOOTING_STAR":
@@ -769,6 +770,9 @@ class MarketAnalyzer:
             bband_upper=bband.get("upper"),
             bband_middle=bband.get("middle"),
             bband_lower=bband.get("lower"),
+            bband_prev_close=bband.get("prev_close"),
+            bband_prev_upper=bband.get("prev_upper"),
+            bband_prev_lower=bband.get("prev_lower"),
         )
         return signal, next_state
 

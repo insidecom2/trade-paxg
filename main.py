@@ -137,6 +137,35 @@ def _optional_indicator(value: Optional[bool]) -> str:
     return "✅" if value else "❌"
 
 
+def _format_bband_line(label: str, signal: Signal) -> str:
+    is_le = label == "BBandLE"
+    value = signal.bband_le if is_le else signal.bband_se
+    parts = [f"{label}: {_optional_indicator(value)}"]
+    prev_band = signal.bband_prev_upper if is_le else signal.bband_prev_lower
+    if signal.bband_prev_close is not None and prev_band is not None:
+        prev_passed = (
+            signal.bband_prev_close <= prev_band
+            if is_le
+            else signal.bband_prev_close >= prev_band
+        )
+        band_name = "Prev Upper" if is_le else "Prev Lower"
+        operator = "<=" if is_le else ">="
+        parts.append(
+            f"Prev Close ${signal.bband_prev_close:.2f} {operator} "
+            f"{band_name} ${prev_band:.2f} {'✅' if prev_passed else '❌'}"
+        )
+    band = signal.bband_upper if is_le else signal.bband_lower
+    if band is not None:
+        current_passed = signal.price > band if is_le else signal.price < band
+        band_name = "Upper" if is_le else "Lower"
+        operator = ">" if is_le else "<"
+        parts.append(
+            f"Close ${signal.price:.2f} {operator} {band_name} ${band:.2f} "
+            f"{'✅' if current_passed else '❌'}"
+        )
+    return " | ".join(parts)
+
+
 def _is_resistance_setup(signal: Signal) -> bool:
     return signal.position == "RESISTANCE" or signal.status.startswith(
         ("BREAKOUT", "RETEST_HELD")
@@ -206,9 +235,6 @@ def build_signal_summary(
         "BREAKDOWN_CONFIRMED",
     }
     bband_enabled = signal.bband_le is not None or signal.bband_se is not None
-    bband_confirmed = (
-        signal.bband_le if is_resistance_setup else signal.bband_se
-    ) is True
     score = sum(
         (
             breakout_is_confirmed,
@@ -219,8 +245,6 @@ def build_signal_summary(
             retest_is_confirmed,
         )
     )
-    if bband_enabled:
-        score += bband_confirmed
 
     symbol_name = symbol.split("/", 1)[0].upper()
     if is_resistance_setup:
@@ -258,15 +282,15 @@ def build_signal_summary(
         f"Pattern: {_indicator(pattern, pattern_is_confirmed)}",
         f"Retest: {_indicator(retest, retest_is_confirmed, retest_is_pending)}",
         "",
-        f"Score: {score}/{'7' if bband_enabled else '6'}",
+        f"Score: {score}/6",
         "",
         "Reason:",
         _format_signal_reason(signal, is_resistance_setup),
     ]
     if bband_enabled:
         bband_lines = [
-            f"BBandLE: {_optional_indicator(signal.bband_le)}",
-            f"BBandSE: {_optional_indicator(signal.bband_se)}",
+            _format_bband_line("BBandLE", signal),
+            _format_bband_line("BBandSE", signal),
         ]
         if signal.bband_upper is not None:
             bband_lines.append(
