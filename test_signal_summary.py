@@ -79,14 +79,8 @@ class SignalSummaryTests(unittest.TestCase):
 
         self.assertIn("BBandLE: ❌", message)
         self.assertIn("BBandSE: ❌", message)
-        self.assertIn(
-            "Prev Close $100.00 <= Prev Upper $102.00 ✅ | Close $110.00 > Upper $108.00 ✅",
-            message,
-        )
-        self.assertIn(
-            "Prev Close $100.00 >= Prev Lower $98.00 ✅ | Close $110.00 < Lower $92.00 ❌",
-            message,
-        )
+        self.assertNotIn("Prev Close", message)
+        self.assertNotIn("Close $110.00", message)
         self.assertIn("BBands: Upper $108.00 | Middle $100.00 | Lower $92.00", message)
         self.assertIn("Score: 2/6", message)
 
