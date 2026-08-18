@@ -140,30 +140,7 @@ def _optional_indicator(value: Optional[bool]) -> str:
 def _format_bband_line(label: str, signal: Signal) -> str:
     is_le = label == "BBandLE"
     value = signal.bband_le if is_le else signal.bband_se
-    parts = [f"{label}: {_optional_indicator(value)}"]
-    prev_band = signal.bband_prev_upper if is_le else signal.bband_prev_lower
-    if signal.bband_prev_close is not None and prev_band is not None:
-        prev_passed = (
-            signal.bband_prev_close <= prev_band
-            if is_le
-            else signal.bband_prev_close >= prev_band
-        )
-        band_name = "Prev Upper" if is_le else "Prev Lower"
-        operator = "<=" if is_le else ">="
-        parts.append(
-            f"Prev Close ${signal.bband_prev_close:.2f} {operator} "
-            f"{band_name} ${prev_band:.2f} {'✅' if prev_passed else '❌'}"
-        )
-    band = signal.bband_upper if is_le else signal.bband_lower
-    if band is not None:
-        current_passed = signal.price > band if is_le else signal.price < band
-        band_name = "Upper" if is_le else "Lower"
-        operator = ">" if is_le else "<"
-        parts.append(
-            f"Close ${signal.price:.2f} {operator} {band_name} ${band:.2f} "
-            f"{'✅' if current_passed else '❌'}"
-        )
-    return " | ".join(parts)
+    return f"{label}: {_optional_indicator(value)}"
 
 
 def _is_resistance_setup(signal: Signal) -> bool:
