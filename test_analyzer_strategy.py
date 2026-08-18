@@ -178,7 +178,7 @@ class SupportStrategyTests(unittest.TestCase):
             (signal.entry_price - signal.take_profit) / 2,
         )
 
-    def test_bband_se_is_required_for_4h_breakdown_confirmation(self):
+    def test_bband_se_is_reported_for_4h_breakdown(self):
         candles = make_downtrend_candles()
         candles.append(
             Candle(
@@ -203,7 +203,7 @@ class SupportStrategyTests(unittest.TestCase):
         self.assertEqual(signal.action, "SELL")
         self.assertTrue(signal.bband_se)
 
-    def test_breakdown_waits_for_bband_se_when_other_conditions_pass(self):
+    def test_breakdown_confirms_without_bband_se(self):
         candles = make_downtrend_candles()
         candles.append(
             Candle(
@@ -224,8 +224,8 @@ class SupportStrategyTests(unittest.TestCase):
             bband_enabled=True,
         )
 
-        self.assertEqual(signal.status, "BREAKDOWN_WATCH")
-        self.assertEqual(signal.action, "HOLD")
+        self.assertEqual(signal.status, "BREAKDOWN_CONFIRMED")
+        self.assertEqual(signal.action, "SELL")
         self.assertFalse(signal.bband_se)
 
     def test_breakdown_waits_when_next_support_is_missing_or_too_close(self):
@@ -411,7 +411,7 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertLess(signal.stop_loss, signal.entry_price)
         self.assertGreater(signal.take_profit, signal.entry_price)
 
-    def test_bband_le_is_required_for_4h_breakout_confirmation(self):
+    def test_bband_le_is_reported_for_4h_breakout(self):
         candles = make_uptrend_candles()
         candles.append(
             Candle(
@@ -436,7 +436,7 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(signal.action, "BUY")
         self.assertTrue(signal.bband_le)
 
-    def test_breakout_waits_for_bband_le_when_other_conditions_pass(self):
+    def test_breakout_confirms_without_bband_le(self):
         candles = make_uptrend_candles()
         candles.append(
             Candle(
@@ -457,8 +457,8 @@ class ResistanceStrategyTests(unittest.TestCase):
             bband_enabled=True,
         )
 
-        self.assertEqual(signal.status, "BREAKOUT_WATCH")
-        self.assertEqual(signal.action, "HOLD")
+        self.assertEqual(signal.status, "BREAKOUT_CONFIRMED")
+        self.assertEqual(signal.action, "BUY")
         self.assertFalse(signal.bband_le)
 
     def test_breakout_waits_when_next_resistance_is_missing_or_too_close(self):

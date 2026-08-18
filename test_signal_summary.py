@@ -68,6 +68,9 @@ class SignalSummaryTests(unittest.TestCase):
             bband_upper=108.0,
             bband_middle=100.0,
             bband_lower=92.0,
+            bband_prev_close=100.0,
+            bband_prev_upper=102.0,
+            bband_prev_lower=98.0,
         )
 
         message = build_signal_summary(
@@ -76,8 +79,16 @@ class SignalSummaryTests(unittest.TestCase):
 
         self.assertIn("BBandLE: ❌", message)
         self.assertIn("BBandSE: ❌", message)
+        self.assertIn(
+            "Prev Close $100.00 <= Prev Upper $102.00 ✅ | Close $110.00 > Upper $108.00 ✅",
+            message,
+        )
+        self.assertIn(
+            "Prev Close $100.00 >= Prev Lower $98.00 ✅ | Close $110.00 < Lower $92.00 ❌",
+            message,
+        )
         self.assertIn("BBands: Upper $108.00 | Middle $100.00 | Lower $92.00", message)
-        self.assertIn("Score: 2/7", message)
+        self.assertIn("Score: 2/6", message)
 
     def test_missing_next_resistance_and_volume_are_safe(self):
         signal = Signal(
