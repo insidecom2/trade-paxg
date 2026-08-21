@@ -337,6 +337,42 @@ def resolve_exit_profit_alert(
     return check, {**state, "last_alerted_timestamp": latest_timestamp}
 
 
+def resolve_exit_profit_zone_alert(
+    candles: List[Candle],
+    previous_state: Optional[Dict[str, Any]] = None,
+    zone_tolerance: Optional[float] = None,
+    lookback: int = 4,
+    min_occurrences: int = 2,
+) -> Tuple[Optional[ExitProfitCheck], Dict[str, Any]]:
+    """Alert when the latest close revisits a recent price zone.
+
+    This price alert is intentionally independent of a simulated entry, take
+    profit, or stop loss. State only prevents sending the same candle twice.
+    """
+    state = dict(previous_state or {})
+    if not candles or not isfinite(candles[-1].close):
+        return None, {
+            key: value for key, value in state.items() if key == "last_alerted_timestamp"
+        }
+
+    check = check_exit_profit_at_level(
+        candles,
+        float(candles[-1].close),
+        zone_tolerance=zone_tolerance,
+        lookback=lookback,
+        min_occurrences=min_occurrences,
+    )
+    latest_timestamp = int(candles[-1].timestamp)
+    next_state = {
+        key: value for key, value in state.items() if key == "last_alerted_timestamp"
+    }
+    if not check.same_zone or latest_timestamp == state.get("last_alerted_timestamp"):
+        return None, next_state
+
+    next_state["last_alerted_timestamp"] = latest_timestamp
+    return check, next_state
+
+
 def find_exit_profit_levels(
     candles: List[Candle],
     min_occurrences: int = 2,
@@ -378,13 +414,17 @@ def find_exit_profit_level(
 
 
 async def run_standalone(symbol: str = "PAXG/USDT", lookback: int = 4) -> None:
-    """Run the 1h exit-profit check against the take-profit anchor in state."""
+    """Run the 1h exit-profit price-zone alert without a simulated trade."""
     import logging
 
     from dotenv import load_dotenv
 
     from exchange_manager import create_market_data_manager
-    from exit_profit_notification import build_exit_profit_notification
+    from exit_profit_notification import (
+        build_exit_profit_notification,
+        should_send_exit_profit_notification,
+    )
+    from telegram_notifier import TelegramNotifier
     from trading_state import TradingStateStore
 
     load_dotenv()
@@ -396,13 +436,18 @@ async def run_standalone(symbol: str = "PAXG/USDT", lookback: int = 4) -> None:
         closed_candles = candles[:-1] if len(candles) > 1 else candles
         store = TradingStateStore()
         key = f"{symbol}|exit_profit"
-        anchor = store.get(key)
-        check, next_anchor = resolve_exit_profit_alert(
-            closed_candles, anchor, lookback=lookback
+        previous_state = store.get(key)
+        check, next_state = resolve_exit_profit_zone_alert(
+            closed_candles, previous_state, lookback=lookback
         )
-        store.save(key, next_anchor)
+        store.save(key, next_state)
         if check is not None:
-            print(build_exit_profit_notification(symbol, check))
+            message = build_exit_profit_notification(symbol, check)
+            print(message)
+            if should_send_exit_profit_notification(check):
+                notifier = TelegramNotifier.from_env()
+                if notifier is not None:
+                    await notifier.send_message(message)
         else:
             print("Exit Profit Alert: NONE")
     finally:

@@ -2,7 +2,7 @@ from exit_profit import ExitProfitCheck
 
 
 def should_send_exit_profit_notification(check: ExitProfitCheck) -> bool:
-    """Send an exit-profit notification only when both closes share a zone."""
+    """Send an exit-profit notification only when the latest close revisits a zone."""
     return check.same_zone
 
 
@@ -25,7 +25,7 @@ def build_exit_profit_notification(
 
     message.extend([
         "",
-        "Take Profit Level",
+        "Exit Profit Level",
         f"Price: ${check.zone_price:.2f}"
         if check.zone_price is not None
         else "Price: N/A",

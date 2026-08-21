@@ -397,11 +397,11 @@ class MarketAnalyzer:
         resistance: float,
         previous_state: Optional[Dict[str, Any]] = None,
         tolerance: float = 0.003,
-        volume_multiplier: float = 1.2,
+        volume_multiplier: float = 1.0,
         long_factor: float = 2.0,
         market_price: Optional[float] = None,
         next_support: Optional[float] = None,
-        minimum_next_support_atr: float = 3.0,
+        minimum_next_support_atr: float = 1.5,
         bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates support tests, breakdowns, retests, and invalidations."""
@@ -442,11 +442,15 @@ class MarketAnalyzer:
             if tracked_next_support is not None
             else None
         )
+        # No lower support in the lookback means no known nearby downside barrier.
         next_support_far_enough = (
-            next_support_distance is not None
-            and current_atr is not None
-            and current_atr > 0
-            and next_support_distance >= minimum_next_support_atr * current_atr
+            tracked_next_support is None
+            or (
+                next_support_distance is not None
+                and current_atr is not None
+                and current_atr > 0
+                and next_support_distance >= minimum_next_support_atr * current_atr
+            )
         )
 
         action = "HOLD"
@@ -590,11 +594,11 @@ class MarketAnalyzer:
         resistance: float,
         previous_state: Optional[Dict[str, Any]] = None,
         tolerance: float = 0.003,
-        volume_multiplier: float = 1.2,
+        volume_multiplier: float = 1.0,
         long_factor: float = 2.0,
         market_price: Optional[float] = None,
         next_resistance: Optional[float] = None,
-        minimum_next_resistance_atr: float = 3.0,
+        minimum_next_resistance_atr: float = 1.5,
         bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates resistance tests, breakouts, retests, and invalidations."""
@@ -635,11 +639,15 @@ class MarketAnalyzer:
             if tracked_next_resistance is not None
             else None
         )
+        # No higher resistance in the lookback means no known nearby upside barrier.
         next_resistance_far_enough = (
-            next_resistance_distance is not None
-            and current_atr is not None
-            and current_atr > 0
-            and next_resistance_distance >= minimum_next_resistance_atr * current_atr
+            tracked_next_resistance is None
+            or (
+                next_resistance_distance is not None
+                and current_atr is not None
+                and current_atr > 0
+                and next_resistance_distance >= minimum_next_resistance_atr * current_atr
+            )
         )
 
         action = "HOLD"
@@ -785,9 +793,9 @@ class MarketAnalyzer:
         tolerance: float = 0.003,
         market_price: Optional[float] = None,
         next_resistance: Optional[float] = None,
-        minimum_next_resistance_atr: float = 3.0,
+        minimum_next_resistance_atr: float = 1.5,
         next_support: Optional[float] = None,
-        minimum_next_support_atr: float = 3.0,
+        minimum_next_support_atr: float = 1.5,
         bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Selects support or resistance strategy based on the active level."""
