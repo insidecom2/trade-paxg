@@ -178,6 +178,41 @@ class SupportStrategyTests(unittest.TestCase):
             (signal.entry_price - signal.take_profit) / 2,
         )
 
+    def test_breakdown_confirms_at_normal_volume_with_one_and_half_atr_headroom(self):
+        candles = make_downtrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=400.0, high=400.0, low=390.0, close=390.0, volume=100.0)
+        )
+
+        signal, state = self.analyzer.generate_support_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_support=388.2,
+        )
+
+        self.assertEqual(signal.status, "BREAKDOWN_CONFIRMED")
+        self.assertEqual(signal.action, "SELL")
+        self.assertAlmostEqual(signal.volume_ratio, 1.0)
+        self.assertTrue(state["next_support_far_enough"])
+
+    def test_breakdown_confirms_when_no_next_support_exists(self):
+        candles = make_downtrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=400.0, high=400.0, low=390.0, close=390.0, volume=200.0)
+        )
+
+        signal, state = self.analyzer.generate_support_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_support=None,
+        )
+
+        self.assertEqual(signal.status, "BREAKDOWN_CONFIRMED")
+        self.assertEqual(signal.action, "SELL")
+        self.assertTrue(state["next_support_far_enough"])
+
     def test_bband_se_is_reported_for_4h_breakdown(self):
         candles = make_downtrend_candles()
         candles.append(
@@ -234,7 +269,7 @@ class SupportStrategyTests(unittest.TestCase):
             Candle(timestamp=220, open=400.0, high=400.0, low=390.0, close=390.0, volume=200.0)
         )
 
-        for next_support in (None, 389.0):
+        for next_support in (389.0,):
             with self.subTest(next_support=next_support):
                 signal, state = self.analyzer.generate_support_strategy_signal(
                     candles,
@@ -411,6 +446,41 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertLess(signal.stop_loss, signal.entry_price)
         self.assertGreater(signal.take_profit, signal.entry_price)
 
+    def test_breakout_confirms_at_normal_volume_with_one_and_half_atr_headroom(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=400.0, high=410.0, low=400.0, close=410.0, volume=100.0)
+        )
+
+        signal, state = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_resistance=411.8,
+        )
+
+        self.assertEqual(signal.status, "BREAKOUT_CONFIRMED")
+        self.assertEqual(signal.action, "BUY")
+        self.assertAlmostEqual(signal.volume_ratio, 1.0)
+        self.assertTrue(state["next_resistance_far_enough"])
+
+    def test_breakout_confirms_when_no_next_resistance_exists(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=400.0, high=410.0, low=400.0, close=410.0, volume=200.0)
+        )
+
+        signal, state = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=self.resistance,
+            next_resistance=None,
+        )
+
+        self.assertEqual(signal.status, "BREAKOUT_CONFIRMED")
+        self.assertEqual(signal.action, "BUY")
+        self.assertTrue(state["next_resistance_far_enough"])
+
     def test_bband_le_is_reported_for_4h_breakout(self):
         candles = make_uptrend_candles()
         candles.append(
@@ -467,7 +537,7 @@ class ResistanceStrategyTests(unittest.TestCase):
             Candle(timestamp=220, open=400.0, high=410.0, low=400.0, close=410.0, volume=200.0)
         )
 
-        for next_resistance in (None, 411.0):
+        for next_resistance in (410.5,):
             with self.subTest(next_resistance=next_resistance):
                 signal, state = self.analyzer.generate_strategy_signal(
                     candles,
@@ -483,7 +553,7 @@ class ResistanceStrategyTests(unittest.TestCase):
     def test_live_breakout_watch_survives_latest_close_below_resistance(self):
         candles = make_uptrend_candles()
         candles.append(
-            Candle(timestamp=220, open=408.0, high=410.0, low=406.0, close=409.0, volume=100.0)
+            Candle(timestamp=220, open=408.0, high=410.0, low=406.0, close=409.0, volume=99.0)
         )
         previous_state = {
             "level": "RESISTANCE",

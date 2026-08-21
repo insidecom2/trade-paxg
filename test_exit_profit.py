@@ -10,6 +10,7 @@ from exit_profit import (
     find_exit_profit_level,
     find_exit_profit_levels,
     resolve_exit_profit_alert,
+    resolve_exit_profit_zone_alert,
     run_standalone,
 )
 from exit_profit_notification import (
@@ -305,6 +306,29 @@ class ExitProfitTests(unittest.TestCase):
         self.assertIsNone(check)
         self.assertEqual(next_anchor, {})
 
+    def test_zone_alerts_without_a_trade_anchor_and_deduplicates_a_candle(self):
+        candles = [
+            make_candle(0, 4200.0),
+            make_candle(1, 4260.0),
+            make_candle(2, 4262.0),
+        ]
+
+        check, state = resolve_exit_profit_zone_alert(
+            candles, zone_tolerance=0.005, lookback=4
+        )
+
+        self.assertIsNotNone(check)
+        self.assertTrue(check.same_zone)
+        self.assertEqual(check.occurrences, 2)
+        self.assertEqual(state, {"last_alerted_timestamp": 2})
+
+        duplicate, duplicate_state = resolve_exit_profit_zone_alert(
+            candles, state, zone_tolerance=0.005, lookback=4
+        )
+
+        self.assertIsNone(duplicate)
+        self.assertEqual(duplicate_state, state)
+
 
 class FakeStateStore:
     def __init__(self):
@@ -337,34 +361,41 @@ class ExitProfitStandaloneTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_standalone_alerts_when_level_revisited(self):
         store = FakeStateStore()
-        store.data["PAXG/USDT|exit_profit"] = self._anchor()
         exchange = AsyncMock()
         exchange.fetch_ohlcv = AsyncMock(return_value=self._exit_profit_candles())
         exchange.close = AsyncMock()
+        notifier = AsyncMock()
 
         with patch("exchange_manager.BinanceManager", return_value=exchange), patch(
             "trading_state.TradingStateStore", return_value=store
+        ), patch(
+            "telegram_notifier.TelegramNotifier.from_env", return_value=notifier
         ), patch("builtins.print") as print_mock:
             await run_standalone()
 
         self.assertIn("Exit Profit Alert", print_mock.call_args_list[-1].args[0])
+        notifier.send_message.assert_awaited_once_with(
+            print_mock.call_args_list[-1].args[0]
+        )
         self.assertEqual(
             store.data["PAXG/USDT|exit_profit"]["last_alerted_timestamp"], 17
         )
 
     async def test_run_standalone_does_not_alert_twice_on_same_candle(self):
         store = FakeStateStore()
-        store.data["PAXG/USDT|exit_profit"] = self._anchor(last_alerted_timestamp=17)
+        store.data["PAXG/USDT|exit_profit"] = {"last_alerted_timestamp": 17}
         exchange = AsyncMock()
         exchange.fetch_ohlcv = AsyncMock(return_value=self._exit_profit_candles())
         exchange.close = AsyncMock()
+        notifier_factory = patch("telegram_notifier.TelegramNotifier.from_env")
 
         with patch("exchange_manager.BinanceManager", return_value=exchange), patch(
             "trading_state.TradingStateStore", return_value=store
-        ), patch("builtins.print") as print_mock:
+        ), notifier_factory as notifier_from_env, patch("builtins.print") as print_mock:
             await run_standalone()
 
         self.assertEqual(print_mock.call_args_list[-1].args[0], "Exit Profit Alert: NONE")
+        notifier_from_env.assert_not_called()
 
 
 if __name__ == "__main__":
