@@ -6,6 +6,7 @@ from pathlib import Path
 from analyzer import MarketAnalyzer
 from main import (
     build_signal_summary,
+    calculate_timeframe_zone_tolerance,
     prepare_analysis_candles,
     resolve_dynamic_levels,
     should_send_signal_notification,
@@ -32,6 +33,52 @@ class TimeframeValidationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "requested=1h.*received=240m"):
             validate_candle_timeframe(candles, "1h")
+
+
+class TimeframeZoneToleranceTests(unittest.TestCase):
+    @staticmethod
+    def flat_gold_candles():
+        return [
+            Candle(
+                timestamp=index,
+                open=3000.0,
+                high=3015.0,
+                low=2985.0,
+                close=3000.0,
+                volume=100.0,
+            )
+            for index in range(20)
+        ]
+
+    def test_one_hour_zone_is_narrower_without_changing_other_timeframes(self):
+        analyzer = MarketAnalyzer()
+        candles = self.flat_gold_candles()
+
+        one_hour = calculate_timeframe_zone_tolerance(analyzer, candles, "1h")
+        four_hour = calculate_timeframe_zone_tolerance(analyzer, candles, "4h")
+
+        self.assertAlmostEqual(one_hour, 0.003)
+        self.assertAlmostEqual(four_hour, 0.0075)
+        self.assertAlmostEqual(one_hour * candles[-1].close, 9.0)
+        self.assertAlmostEqual(four_hour * candles[-1].close, 22.5)
+
+    def test_one_hour_zone_never_exceeds_one_thousand_points(self):
+        analyzer = MarketAnalyzer()
+        candles = [
+            Candle(
+                timestamp=index,
+                open=3000.0,
+                high=3050.0,
+                low=2950.0,
+                close=3000.0,
+                volume=100.0,
+            )
+            for index in range(20)
+        ]
+
+        tolerance = calculate_timeframe_zone_tolerance(analyzer, candles, "1h")
+
+        self.assertAlmostEqual(tolerance * candles[-1].close, 10.0)
 
 
 class BollingerSignalTests(unittest.TestCase):
@@ -834,6 +881,21 @@ class DynamicLevelTests(unittest.TestCase):
         self.assertEqual(len(zones), 1)
         self.assertEqual(zones[0].type, "DEMAND")
         self.assertEqual((zones[0].bottom, zones[0].top), (99.0, 101.0))
+
+    def test_recent_zones_respect_explicit_max_distance(self):
+        candles = [
+            Candle(timestamp=0, open=200.0, high=201.0, low=199.0, close=200.0, volume=100.0),
+            Candle(timestamp=1, open=110.0, high=111.0, low=109.0, close=110.5, volume=100.0),
+            Candle(timestamp=2, open=110.0, high=113.0, low=109.5, close=112.0, volume=100.0),
+        ]
+
+        zones = self.analyzer.find_recent_snd_zones(
+            candles,
+            price=100.0,
+            max_distance=0.5,
+        )
+
+        self.assertEqual(zones, [])
 
     def test_dynamic_levels_use_recent_lookback_for_fallbacks(self):
         candles = [
