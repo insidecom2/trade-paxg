@@ -28,6 +28,12 @@ ANALYSIS_REPORT_ITEM_LIMIT = 3
 ANALYSIS_REPORT_LOOKBACK = 60
 BREAKOUT_MINIMUM_NEXT_RESISTANCE_ATR = 1.5
 BREAKDOWN_MINIMUM_NEXT_SUPPORT_ATR = 1.5
+DEFAULT_ZONE_ATR_MULTIPLIER = 0.75
+ZONE_ATR_MULTIPLIERS = {
+    "1h": 0.30,
+}
+ONE_HOUR_MAX_ZONE_POINTS = 1000
+GOLD_PRICE_PER_POINT = 0.01
 TIMEFRAME_DURATIONS = {
     "1m": timedelta(minutes=1),
     "5m": timedelta(minutes=5),
@@ -36,6 +42,30 @@ TIMEFRAME_DURATIONS = {
     "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
 }
+
+
+def calculate_timeframe_zone_tolerance(analyzer, candles, timeframe: str) -> float:
+    """Calculate the support/resistance zone width for a strategy timeframe."""
+    atr_multiplier = ZONE_ATR_MULTIPLIERS.get(
+        timeframe,
+        DEFAULT_ZONE_ATR_MULTIPLIER,
+    )
+    if timeframe == "1h" and candles and candles[-1].close > 0:
+        maximum = (
+            ONE_HOUR_MAX_ZONE_POINTS
+            * GOLD_PRICE_PER_POINT
+            / candles[-1].close
+        )
+        return analyzer.calculate_zone_tolerance(
+            candles,
+            atr_multiplier=atr_multiplier,
+            minimum=min(0.003, maximum),
+            maximum=maximum,
+        )
+    return analyzer.calculate_zone_tolerance(
+        candles,
+        atr_multiplier=atr_multiplier,
+    )
 
 
 def validate_candle_timeframe(candles, timeframe: str) -> int:
@@ -378,6 +408,11 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
         state_store = TradingStateStore()
         state_key = f"{symbol}|{timeframe}"
         previous_state = state_store.get(state_key)
+        zone_tolerance = calculate_timeframe_zone_tolerance(
+            analyzer,
+            closed_candles,
+            timeframe,
+        )
 
         # Find recent zones and levels relative to the latest closed price.
         analysis_reference_price = closed_candles[-1].close
@@ -386,6 +421,7 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             analysis_reference_price,
             lookback=ANALYSIS_REPORT_LOOKBACK,
             limit=ANALYSIS_REPORT_ITEM_LIMIT,
+            max_distance=zone_tolerance * analysis_reference_price,
         )
         latest_resistance_levels, latest_support_levels = analyzer.find_key_levels(
             closed_candles,
@@ -453,7 +489,6 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
                 support,
                 lookback=ANALYSIS_REPORT_LOOKBACK,
             )
-        zone_tolerance = analyzer.calculate_zone_tolerance(closed_candles)
         signal, next_state = analyzer.generate_strategy_signal(
             closed_candles,
             support,

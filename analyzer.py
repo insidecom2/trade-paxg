@@ -30,6 +30,7 @@ class MarketAnalyzer:
         price: float,
         lookback: int = 60,
         limit: int = 3,
+        max_distance: Optional[float] = None,
     ) -> List[Zone]:
         """Returns the latest zones that are near or contain the current price."""
         if not candles or limit <= 0:
@@ -37,8 +38,9 @@ class MarketAnalyzer:
 
         recent_candles = candles[-max(5, lookback):]
         zones = self.find_snd_zones(recent_candles)
-        tolerance = self.calculate_zone_tolerance(recent_candles)
-        max_distance = tolerance * price
+        if max_distance is None:
+            tolerance = self.calculate_zone_tolerance(recent_candles)
+            max_distance = tolerance * price
         nearby_zones = []
 
         for zone in reversed(zones):
