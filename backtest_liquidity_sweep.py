@@ -38,6 +38,18 @@ class Trade:
     r_multiple: Optional[float]
 
 
+@dataclass
+class ReversalEvent:
+    timestamp: int
+    zone_name: str
+    direction: str
+    led_to_entry: bool
+    skip_reason: Optional[str]
+
+
+REVERSAL_DETECTED_MARKER = "ตรวจพบแท่งกลับตัว"
+
+
 async def fetch_paginated_ohlcv(
     manager: BinanceManager, symbol: str, timeframe: str, since_ms: int, until_ms: int
 ) -> List[Candle]:
@@ -150,6 +162,7 @@ async def run_backtest(
 
     state: dict = {}
     trades: List[Trade] = []
+    reversal_events: List[ReversalEvent] = []
     funnel: Counter = Counter()
     invalidated_from: Counter = Counter()
     ticks_evaluated = 0
@@ -175,11 +188,13 @@ async def run_backtest(
         zones = ls.build_key_zones(analyzer, closed_1h_window, asian_range, london_range, candle.close)
 
         phase_before = state.get("phase", ls.PHASE_IDLE)
-        new_state, message = ls.advance_liquidity_sweep_state(analyzer, closed_5m_window, zones, state, symbol)
+        zone_name_before = state.get("name")
+        zone_side_before = state.get("side")
+        new_state, messages = ls.advance_liquidity_sweep_state(analyzer, closed_5m_window, zones, state, symbol)
         phase_after = new_state.get("phase", ls.PHASE_IDLE)
         state = new_state
 
-        if message is None:
+        if not messages:
             continue
 
         if phase_after != ls.PHASE_IDLE:
@@ -187,6 +202,18 @@ async def run_backtest(
 
         if phase_after == ls.PHASE_IDLE and phase_before != ls.PHASE_IDLE:
             invalidated_from[phase_before] += 1
+
+        if len(messages) == 2 and REVERSAL_DETECTED_MARKER in messages[0]:
+            led_to_entry = phase_after == ls.PHASE_ENTERED
+            reversal_events.append(
+                ReversalEvent(
+                    timestamp=candle.timestamp,
+                    zone_name=zone_name_before or "?",
+                    direction=ls.direction_for_zone_side(zone_side_before) if zone_side_before else "?",
+                    led_to_entry=led_to_entry,
+                    skip_reason=None if led_to_entry else messages[1],
+                )
+            )
 
         if phase_after == ls.PHASE_ENTERED:
             future_candles = candles_5m[index + 1:]
@@ -216,7 +243,7 @@ async def run_backtest(
                 )
             )
 
-    print_report(symbol, days, ticks_evaluated, funnel, invalidated_from, trades)
+    print_report(symbol, days, ticks_evaluated, funnel, invalidated_from, trades, reversal_events)
 
 
 def print_report(
@@ -226,6 +253,7 @@ def print_report(
     funnel: Counter,
     invalidated_from: Counter,
     trades: List[Trade],
+    reversal_events: List[ReversalEvent],
 ) -> None:
     window_text = f"{ls.NOTIFY_START_HOUR:02d}:00-{ls.NOTIFY_END_HOUR:02d}:00 Bangkok Mon-Fri"
     print(f"\n=== Liquidity Sweep Backtest: {symbol} | {ls.STRATEGY_TIMEFRAME} | last {days} days | {window_text} ===\n")
@@ -239,6 +267,18 @@ def print_report(
     if invalidated_from:
         for phase, count in invalidated_from.most_common():
             print(f"  {phase:<20} {count}")
+    else:
+        print("  none")
+
+    print(f"\nReversal candles detected: {len(reversal_events)}")
+    if reversal_events:
+        for event in reversal_events:
+            when = datetime.fromtimestamp(event.timestamp / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            if event.led_to_entry:
+                outcome_text = "-> entered"
+            else:
+                outcome_text = f"-> skipped ({event.skip_reason.splitlines()[-1].strip()})"
+            print(f"  {when} UTC | {event.direction:<4} | {event.zone_name:<16} {outcome_text}")
     else:
         print("  none")
 

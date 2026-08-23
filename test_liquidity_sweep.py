@@ -56,6 +56,32 @@ class SessionHighLowTests(unittest.TestCase):
         self.assertIsNone(ls.session_high_low(candles, ls.ASIAN_SESSION_HOURS_UTC, reference))
 
 
+def _swing_test_candles():
+    # Highs/lows vary monotonically around each override so no accidental
+    # local-extrema ties occur between the intended swing points.
+    highs = [100 + i * 0.01 for i in range(11)]
+    lows = [99 - i * 0.01 for i in range(11)]
+    highs[2] = 105  # older swing high
+    lows[5] = 95  # older swing low
+    highs[8] = 108  # most recent swing high
+    return [make_candle(i, 100, highs[i], lows[i], 100) for i in range(11)]
+
+
+class RecentSwingLevelsTests(unittest.TestCase):
+    def test_returns_most_recent_swing_high_and_low(self):
+        analyzer = MarketAnalyzer()
+        recent_high, recent_low = ls.recent_swing_levels(analyzer, _swing_test_candles(), lookback=60)
+        self.assertEqual(recent_high, 108)
+        self.assertEqual(recent_low, 95)
+
+    def test_build_key_zones_includes_recent_swing_levels(self):
+        analyzer = MarketAnalyzer()
+        zones = ls.build_key_zones(analyzer, _swing_test_candles(), None, None, price=100)
+        names = {zone.name for zone in zones}
+        self.assertIn("Recent Swing High", names)
+        self.assertIn("Recent Swing Low", names)
+
+
 class CandlesEstablishedBeforeLatestTests(unittest.TestCase):
     def test_drops_the_latest_candle(self):
         candles = [make_candle(0, 1, 2, 0, 1), make_candle(1, 1, 2, 0, 1)]
@@ -104,19 +130,68 @@ class ZoneDetectionTests(unittest.TestCase):
         self.assertEqual(ls.direction_for_zone_side(ls.SUPPORT), "BUY")
 
 
-class ReversalCandleTests(unittest.TestCase):
-    def test_buy_requires_red_then_green(self):
-        red = make_candle(0, 100, 100.2, 99.8, 99.9)
-        green = make_candle(1, 99.9, 100.3, 99.85, 100.2)
-        self.assertTrue(ls.detect_reversal_candle("BUY", red, green))
-        self.assertFalse(ls.detect_reversal_candle("BUY", green, red))
-        self.assertFalse(ls.detect_reversal_candle("BUY", red, red))
+class CandleColorTests(unittest.TestCase):
+    def test_candle_color(self):
+        self.assertEqual(ls.candle_color(make_candle(0, 100, 101, 99, 100.5)), "GREEN")
+        self.assertEqual(ls.candle_color(make_candle(0, 100, 101, 99, 99.5)), "RED")
+        self.assertEqual(ls.candle_color(make_candle(0, 100, 101, 99, 100)), "NEUTRAL")
 
-    def test_sell_requires_green_then_red(self):
+    def test_is_long_candle(self):
+        big = make_candle(0, 100, 102, 99, 101.5)  # body = 1.5
+        small = make_candle(0, 100, 100.3, 99.9, 100.1)  # body = 0.1
+        self.assertTrue(ls.is_long_candle(big, atr_value=1.0))
+        self.assertFalse(ls.is_long_candle(small, atr_value=1.0))
+        self.assertFalse(ls.is_long_candle(big, atr_value=None))
+
+    def test_opposite_streak_length(self):
+        candles = [
+            make_candle(0, 100, 101, 99, 100.5),  # GREEN
+            make_candle(1, 100, 101, 99, 99.5),   # RED
+            make_candle(2, 100, 101, 99, 99.5),   # RED
+        ]
+        self.assertEqual(ls.opposite_streak_length(candles, "RED"), 2)
+        self.assertEqual(ls.opposite_streak_length(candles, "GREEN"), 0)
+
+
+class ReversalCandleTests(unittest.TestCase):
+    def test_buy_requires_green_after_a_red_streak(self):
+        red = make_candle(0, 100, 100.2, 99.8, 99.9)
+        candles = [red, red, make_candle(2, 99.9, 100.3, 99.85, 100.2)]
+        self.assertTrue(ls.detect_reversal_candle("BUY", candles, atr_value=None))
+
+    def test_buy_rejects_a_single_red_candle_with_no_streak_or_size(self):
         red = make_candle(0, 100, 100.2, 99.8, 99.9)
         green = make_candle(1, 99.9, 100.3, 99.85, 100.2)
-        self.assertTrue(ls.detect_reversal_candle("SELL", green, red))
-        self.assertFalse(ls.detect_reversal_candle("SELL", red, green))
+        self.assertFalse(ls.detect_reversal_candle("BUY", [red, green], atr_value=None))
+
+    def test_buy_accepts_a_single_long_red_candle(self):
+        long_red = make_candle(0, 101, 101.1, 99, 99.1)  # body 1.9
+        green = make_candle(1, 99.1, 99.5, 99.0, 99.4)
+        self.assertTrue(ls.detect_reversal_candle("BUY", [long_red, green], atr_value=1.0))
+
+    def test_buy_rejects_when_current_candle_is_not_green(self):
+        red = make_candle(0, 100, 100.2, 99.8, 99.9)
+        candles = [red, red, make_candle(2, 100, 100.1, 99.8, 99.9)]  # still red
+        self.assertFalse(ls.detect_reversal_candle("BUY", candles, atr_value=None))
+
+    def test_sell_requires_red_after_a_green_streak(self):
+        green = make_candle(0, 99.9, 100.3, 99.85, 100.2)
+        candles = [green, green, make_candle(2, 100.2, 100.3, 99.7, 99.8)]
+        self.assertTrue(ls.detect_reversal_candle("SELL", candles, atr_value=None))
+
+    def test_requires_at_least_two_candles(self):
+        self.assertFalse(ls.detect_reversal_candle("BUY", [make_candle(0, 100, 101, 99, 100.5)], atr_value=None))
+
+
+class StaleSetupTests(unittest.TestCase):
+    def test_far_from_zone_with_atr_is_stale(self):
+        self.assertTrue(ls.is_setup_stale(zone_price=100.0, price=110.0, atr_value=1.0))
+
+    def test_close_to_zone_is_not_stale(self):
+        self.assertFalse(ls.is_setup_stale(zone_price=100.0, price=101.0, atr_value=1.0))
+
+    def test_no_atr_is_never_stale(self):
+        self.assertFalse(ls.is_setup_stale(zone_price=100.0, price=200.0, atr_value=None))
 
 
 class TradeLevelTests(unittest.TestCase):
@@ -159,47 +234,61 @@ class AdvanceStateTests(unittest.TestCase):
     def test_full_sell_sequence_reaches_entry_on_close_back(self):
         candles = [make_candle(self._ts(0), 99.9, 100.0, 99.7, 99.9)]
 
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, {}, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, {}, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
 
         candles.append(make_candle(self._ts(1), 100.7, 100.9, 100.6, 100.85))
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_NEAR_ZONE)
-        self.assertIn("Key Resistance", message)
+        self.assertIn("Key Resistance", messages[0])
 
-        candles.append(make_candle(self._ts(2), 100.9, 101.2, 100.7, 101.0))
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        candles.append(make_candle(self._ts(2), 100.9, 101.2, 100.7, 101.0))  # sweep, GREEN
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_SWEPT)
         self.assertEqual(state["sweep_extreme"], 101.2)
 
-        candles.append(make_candle(self._ts(3), 100.9, 100.95, 100.7, 100.5))
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        candles.append(make_candle(self._ts(3), 101.0, 101.15, 100.95, 101.1))  # still above zone, GREEN
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        self.assertEqual(state["phase"], ls.PHASE_SWEPT)
+        self.assertEqual(messages, [])
+
+        candles.append(make_candle(self._ts(4), 101.1, 101.15, 100.4, 100.5))  # closes back, RED
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_ENTERED)
         self.assertEqual(state["direction"], "SELL")
         self.assertEqual(state["entry_price"], 100.5)
         self.assertEqual(state["take_profit"], 98.0)
         self.assertGreaterEqual(state["stop_loss"], 101.2)
-        self.assertIn("SELL", message)
-        self.assertIn("เด้งกลับ", message)
+        self.assertEqual(len(messages), 2)
+        self.assertIn("ตรวจพบแท่งกลับตัว", messages[0])
+        self.assertIn("SELL", messages[1])
+        self.assertIn("เด้งกลับ", messages[1])
 
     def test_buy_setup_enters_on_close_back_above_support(self):
         candles = [make_candle(self._ts(0), 98.1, 98.3, 98.0, 98.1)]
         state, _ = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, {}, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_NEAR_ZONE)
 
-        candles.append(make_candle(self._ts(1), 98.0, 98.2, 97.6, 97.9))
+        candles.append(make_candle(self._ts(1), 98.0, 98.2, 97.6, 97.9))  # sweep, RED
         state, _ = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_SWEPT)
         self.assertEqual(state["sweep_extreme"], 97.6)
 
-        candles.append(make_candle(self._ts(2), 98.0, 98.5, 97.9, 98.4))
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        candles.append(make_candle(self._ts(2), 97.9, 98.0, 97.7, 97.8))  # still below zone, RED
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        self.assertEqual(state["phase"], ls.PHASE_SWEPT)
+        self.assertEqual(messages, [])
+
+        candles.append(make_candle(self._ts(3), 97.8, 98.5, 97.7, 98.4))  # closes back above, GREEN
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_ENTERED)
         self.assertEqual(state["direction"], "BUY")
         self.assertEqual(state["entry_price"], 98.4)
         self.assertEqual(state["take_profit"], 101.0)
         self.assertLessEqual(state["stop_loss"], 97.6)
-        self.assertIn("BUY", message)
+        self.assertEqual(len(messages), 2)
+        self.assertIn("ตรวจพบแท่งกลับตัว", messages[0])
+        self.assertIn("BUY", messages[1])
 
     def test_confirmation_phase_is_used_when_more_than_one_candle_is_required(self):
         original_confirmation_candles = ls.CONFIRMATION_CANDLES
@@ -214,15 +303,18 @@ class AdvanceStateTests(unittest.TestCase):
                 "expires_at": self._ts(10),
                 "last_candle_timestamp": self._ts(0),
             }
-            candles = [make_candle(self._ts(1), 100.3, 100.95, 100.2, 100.5)]
-            state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+            candles = [
+                make_candle(self._ts(0), 100.1, 100.5, 100.0, 100.4),  # GREEN, history
+                make_candle(self._ts(1), 100.3, 100.95, 100.2, 100.5),  # GREEN, close-back
+            ]
+            state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
             self.assertEqual(state["phase"], ls.PHASE_CONFIRMING)
-            self.assertIn("Key Resistance", message)
+            self.assertIn("Key Resistance", messages[0])
 
-            candles.append(make_candle(self._ts(2), 100.5, 100.6, 100.3, 100.4))
-            state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+            candles.append(make_candle(self._ts(2), 100.5, 100.6, 100.2, 100.3))  # RED, still holding
+            state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
             self.assertEqual(state["phase"], ls.PHASE_ENTERED)
-            self.assertEqual(state["entry_price"], 100.4)
+            self.assertEqual(state["entry_price"], 100.3)
         finally:
             ls.CONFIRMATION_CANDLES = original_confirmation_candles
 
@@ -237,9 +329,9 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [make_candle(self._ts(1), 100.6, 101.05, 100.5, 101.05)]  # closes back above the zone again
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIn("อาจเป็น Breakout จริง", message)
+        self.assertIn("อาจเป็น Breakout จริง", messages[0])
 
     def test_confirmation_expires_back_to_idle(self):
         zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
@@ -252,12 +344,12 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [make_candle(self._ts(1), 100.5, 100.6, 100.3, 100.4)]  # still holding, but past expiry
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIsNotNone(message)
+        self.assertTrue(messages)
 
     def test_skips_entry_when_risk_reward_is_too_low(self):
-        zones = [ls.Zone("Key Resistance", ls.RESISTANCE, 101.0), ls.Zone("Key Support", ls.SUPPORT, 100.6)]
+        zones = [ls.Zone("Key Resistance", ls.RESISTANCE, 101.0), ls.Zone("Key Support", ls.SUPPORT, 100.77)]
         zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
         state = {
             **zone.to_dict(),
@@ -268,12 +360,15 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [
-            make_candle(self._ts(0), 100.6, 100.95, 100.5, 100.9),  # bullish, satisfies the reversal check
-            make_candle(self._ts(1), 100.9, 100.95, 100.7, 100.8),
+            make_candle(self._ts(-2), 100.7, 101.1, 100.6, 100.9),  # GREEN
+            make_candle(self._ts(-1), 100.9, 101.1, 100.8, 101.0),  # GREEN, 2-candle streak
+            make_candle(self._ts(1), 100.9, 100.95, 100.7, 100.8),  # RED entry candle
         ]
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIn("โซนเป้าหมายฝั่งตรงข้ามใกล้เกินไป", message)
+        self.assertEqual(len(messages), 2)
+        self.assertIn("ตรวจพบแท่งกลับตัว", messages[0])
+        self.assertIn("โซนเป้าหมายฝั่งตรงข้ามใกล้เกินไป", messages[1])
 
     def test_skips_entry_when_candle_has_not_flipped_color(self):
         zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
@@ -286,18 +381,19 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [
-            make_candle(self._ts(0), 100.6, 100.95, 100.5, 100.4),  # bearish, not the required flip for SELL
-            make_candle(self._ts(1), 100.5, 100.6, 100.3, 100.4),  # bearish too, no color flip
+            make_candle(self._ts(0), 100.6, 100.95, 100.5, 100.4),  # RED, not the required flip for SELL
+            make_candle(self._ts(1), 100.5, 100.6, 100.3, 100.4),  # RED too, no color flip
         ]
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIn("แท่งเทียนยังไม่กลับสี", message)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("แท่งเทียนยังไม่กลับสี", messages[0])
 
     def test_idle_stays_idle_when_no_zone_nearby(self):
         candles = [make_candle(self._ts(0), 50, 50.1, 49.9, 50)]
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, {}, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, {}, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIsNone(message)
+        self.assertEqual(messages, [])
 
     def test_near_zone_resets_when_price_drifts_away_without_sweeping(self):
         zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
@@ -307,9 +403,27 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [make_candle(self._ts(1), 95, 95.1, 94.9, 95)]
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIsNone(message)
+        self.assertEqual(messages, [])
+
+    def test_swept_is_abandoned_when_price_runs_far_from_the_zone(self):
+        zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
+        state = {
+            **zone.to_dict(),
+            "phase": ls.PHASE_SWEPT,
+            "sweep_extreme": 101.2,
+            "sweep_timestamp": self._ts(0),
+            "expires_at": self._ts(30),
+            "last_candle_timestamp": self._ts(-1),
+        }
+        history = [make_candle(self._ts(i), 100, 100.3, 99.7, 100) for i in range(15)]
+        far_away_candle = make_candle(self._ts(15), 109, 110.5, 108.5, 110)
+        candles = history + [far_away_candle]
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        self.assertEqual(state["phase"], ls.PHASE_IDLE)
+        self.assertIn("ยกเลิก", messages[0])
+        self.assertIn("ราคาวิ่งหนีไปไกล", messages[0])
 
     def test_swept_expires_back_to_idle(self):
         zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
@@ -322,9 +436,9 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [make_candle(self._ts(1), 101.05, 101.1, 101.0, 101.05)]  # still above zone, no close-back
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
-        self.assertIn("ยังไม่เข้าไม้", message)
+        self.assertIn("ยังไม่เข้าไม้", messages[0])
 
     def test_entered_state_persists_until_cooldown_expires(self):
         zone = ls.Zone("Key Resistance", ls.RESISTANCE, 101.0)
@@ -339,22 +453,22 @@ class AdvanceStateTests(unittest.TestCase):
             "last_candle_timestamp": self._ts(0),
         }
         candles = [make_candle(self._ts(1), 100, 100.1, 99.9, 100)]
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_ENTERED)
-        self.assertIsNone(message)
+        self.assertEqual(messages, [])
 
         candles.append(make_candle(self._ts(2), 100, 100.1, 99.9, 100))
-        state, message = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
+        state, messages = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, state, self.symbol)
         self.assertEqual(state["phase"], ls.PHASE_IDLE)
 
     def test_same_candle_is_not_reprocessed(self):
         candles = [make_candle(self._ts(0), 50, 50.1, 49.9, 50)]
         state, _ = ls.advance_liquidity_sweep_state(self.analyzer, candles, self.zones, {}, self.symbol)
-        state_again, message_again = ls.advance_liquidity_sweep_state(
+        state_again, messages_again = ls.advance_liquidity_sweep_state(
             self.analyzer, candles, self.zones, state, self.symbol
         )
         self.assertEqual(state, state_again)
-        self.assertIsNone(message_again)
+        self.assertEqual(messages_again, [])
 
 
 if __name__ == "__main__":
