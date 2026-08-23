@@ -8,3 +8,6 @@ CRON_TZ=Asia/Bangkok
 1 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-exit.lock /app/run_exit_profit_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
 # 1 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-1h.lock /app/run_cron_job.sh 1h >> /proc/1/fd/1 2>> /proc/1/fd/2
 1 */4 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-4h.lock /app/run_cron_job.sh 4h >> /proc/1/fd/1 2>> /proc/1/fd/2
+
+# Liquidity sweep watch on 1h, restricted to 12:00-21:00 Bangkok (CRON_TZ above), Mon-Fri.
+0 12-20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-liquidity-sweep.lock /app/run_liquidity_sweep_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2

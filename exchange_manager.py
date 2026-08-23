@@ -113,9 +113,11 @@ class BinanceManager:
                 logger.warning(f"Binance host {host} unreachable ({e}); trying mirror...")
         raise last_error
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> List[Candle]:
+    async def fetch_ohlcv(
+        self, symbol: str, timeframe: str, limit: int = 100, since: Optional[int] = None
+    ) -> List[Candle]:
         try:
-            ohlcv = await self._call('fetch_ohlcv', symbol, timeframe, limit=limit)
+            ohlcv = await self._call('fetch_ohlcv', symbol, timeframe, since=since, limit=limit)
             return [
                 Candle(
                     timestamp=x[0], open=x[1], high=x[2], low=x[3], close=x[4], volume=x[5]

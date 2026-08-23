@@ -22,7 +22,7 @@ class CronConfigurationTests(unittest.TestCase):
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        self.assertEqual(len(entries), 2)
+        self.assertEqual(len(entries), 3)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
@@ -46,6 +46,17 @@ class CronConfigurationTests(unittest.TestCase):
             "expected an hourly exit-profit cron entry",
         )
 
+    def test_liquidity_sweep_job_is_scheduled_within_bangkok_window(self):
+        entries = scheduled_entries()
+        sweep_entries = [e for e in entries if "run_liquidity_sweep_job.sh" in e]
+
+        self.assertEqual(len(sweep_entries), 1)
+        for entry in sweep_entries:
+            with self.subTest(entry=entry):
+                self.assertIn("/tmp/trade-paxg-liquidity-sweep.lock", entry)
+                self.assertIn("1-5", entry)
+        self.assertTrue(any("0 12-20" in entry for entry in sweep_entries))
+
     def test_launcher_forwards_an_explicit_timeframe(self):
         launcher = CRON_LAUNCHER.read_text(encoding="utf-8")
 
@@ -59,6 +70,12 @@ class CronConfigurationTests(unittest.TestCase):
         launcher = (ROOT / "run_exit_profit_job.sh").read_text(encoding="utf-8")
 
         self.assertIn("exit_profit.py", launcher)
+        self.assertIn('--symbol "${TRADING_SYMBOL:-PAXG/USDT}"', launcher)
+
+    def test_liquidity_sweep_launcher_runs_the_watch(self):
+        launcher = (ROOT / "run_liquidity_sweep_job.sh").read_text(encoding="utf-8")
+
+        self.assertIn("liquidity_sweep.py", launcher)
         self.assertIn('--symbol "${TRADING_SYMBOL:-PAXG/USDT}"', launcher)
 
 
