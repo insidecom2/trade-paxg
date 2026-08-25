@@ -49,7 +49,7 @@ def calculate_exit_profit_zone_tolerance(
     atr_period: int = 14,
     atr_multiplier: float = 0.75,
     minimum: float = 0.001,
-    maximum: float = 0.008,
+    maximum: float = 0.0025,
 ) -> float:
     """Return a narrow ATR-based percentage width for a close-price zone."""
     if not candles or candles[-1].close <= 0:
