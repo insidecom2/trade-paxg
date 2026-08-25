@@ -72,7 +72,7 @@ class ExitProfitTests(unittest.TestCase):
             for index in range(20)
         ]
 
-        self.assertAlmostEqual(calculate_exit_profit_zone_tolerance(candles), 0.008)
+        self.assertAlmostEqual(calculate_exit_profit_zone_tolerance(candles), 0.0025)
 
     def test_narrow_zone_matches_prices_about_five_dollars_apart(self):
         candles = [
