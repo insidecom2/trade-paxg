@@ -28,6 +28,7 @@ ANALYSIS_REPORT_ITEM_LIMIT = 3
 ANALYSIS_REPORT_LOOKBACK = 60
 BREAKOUT_MINIMUM_NEXT_RESISTANCE_ATR = 1.5
 BREAKDOWN_MINIMUM_NEXT_SUPPORT_ATR = 1.5
+BREAKOUT_WATCH_MAX_CANDLES = 3
 DEFAULT_ZONE_ATR_MULTIPLIER = 0.75
 ZONE_ATR_MULTIPLIERS = {
     "1h": 0.30,
@@ -204,10 +205,19 @@ def build_signal_summary(
     next_resistance: Optional[float] = None,
     next_support: Optional[float] = None,
     strategy_state: Optional[dict] = None,
+    breakout_reference: Optional[float] = None,
 ) -> str:
     state = strategy_state or {}
     is_resistance_setup = _is_resistance_setup(signal)
     level = resistance if is_resistance_setup else support
+    reference_level = float(breakout_reference) if breakout_reference is not None else level
+    active_breakout_statuses = {"BREAKOUT_WATCH", "BREAKOUT_CONFIRMED", "RETEST_HELD"}
+    active_breakdown_statuses = {"BREAKDOWN_WATCH", "BREAKDOWN_CONFIRMED", "RETEST_REJECTED"}
+    tracks_breakout_reference = breakout_reference is not None and (
+        signal.status in active_breakout_statuses
+        if is_resistance_setup
+        else signal.status in active_breakdown_statuses
+    )
 
     if is_resistance_setup:
         trend_is_confirmed = state.get("uptrend") is True
@@ -219,7 +229,7 @@ def build_signal_summary(
         expected_pattern = "LONG_RED"
 
     breakout_is_confirmed = (
-        current_price > level if is_resistance_setup else current_price < level
+        current_price > reference_level if is_resistance_setup else current_price < reference_level
     )
     next_level_value = next_resistance if is_resistance_setup else next_support
     headroom = None
@@ -255,11 +265,21 @@ def build_signal_summary(
 
     symbol_name = symbol.split("/", 1)[0].upper()
     if is_resistance_setup:
-        resistance_line = f"Resistance: {_indicator(f'${resistance:.2f}', breakout_is_confirmed)}"
+        resistance_line = (
+            f"Breakout Resistance: {_indicator(f'${reference_level:.2f}', breakout_is_confirmed)}"
+            if tracks_breakout_reference
+            else f"Resistance: {_indicator(f'${resistance:.2f}', breakout_is_confirmed)}"
+        )
+        current_level_line = f"Current Resistance: ${resistance:.2f}" if tracks_breakout_reference else None
         support_line = f"Support: ${support:.2f}"
     else:
         resistance_line = f"Resistance: ${resistance:.2f}"
-        support_line = f"Support: {_indicator(f'${support:.2f}', breakout_is_confirmed)}"
+        support_line = (
+            f"Breakdown Support: {_indicator(f'${reference_level:.2f}', breakout_is_confirmed)}"
+            if tracks_breakout_reference
+            else f"Support: {_indicator(f'${support:.2f}', breakout_is_confirmed)}"
+        )
+        current_level_line = f"Current Support: ${support:.2f}" if tracks_breakout_reference else None
     next_resistance_text = (
         f"${next_resistance:.2f}" if next_resistance is not None else "N/A"
     )
@@ -279,6 +299,7 @@ def build_signal_summary(
         f"Close: ${signal.price:.2f}",
         "",
         resistance_line,
+        *([current_level_line] if current_level_line is not None else []),
         f"Next Resistance: {next_resistance_text}",
         support_line,
         f"Next Support: {next_support_text}",
@@ -334,23 +355,6 @@ def resolve_dynamic_levels(
 
     previous_support = previous_state.get("support")
     previous_resistance = previous_state.get("resistance")
-    active_level_statuses = {
-        "BREAKDOWN_WATCH",
-        "BREAKDOWN_CONFIRMED",
-        "RETEST_REJECTED",
-        "BREAKOUT_WATCH",
-        "BREAKOUT_CONFIRMED",
-        "RETEST_HELD",
-    }
-    if (
-        previous_state.get("status") in active_level_statuses
-        and previous_support is not None
-        and previous_resistance is not None
-    ):
-        # Keep the level that was actually broken. Recomputing here could move
-        # the reference past the breakout and lose the pending confirmation.
-        return float(previous_support), float(previous_resistance)
-
     if previous_support is not None and previous_resistance is not None:
         # Check the live price against the previous levels before allowing a
         # fresh calculation to replace them. This catches the first breakout
@@ -459,36 +463,12 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             current_price,
             previous_state,
         )
-        active_breakout_statuses = {
-            "BREAKOUT_WATCH",
-            "BREAKOUT_CONFIRMED",
-            "RETEST_HELD",
-        }
-        active_breakdown_statuses = {
-            "BREAKDOWN_WATCH",
-            "BREAKDOWN_CONFIRMED",
-            "RETEST_REJECTED",
-        }
-        next_resistance = previous_state.get("next_resistance")
-        if (
-            previous_state.get("status") not in active_breakout_statuses
-            or next_resistance is None
-        ):
-            next_resistance = analyzer.find_next_resistance(
-                closed_candles,
-                resistance,
-                lookback=ANALYSIS_REPORT_LOOKBACK,
-            )
-        next_support = previous_state.get("next_support")
-        if (
-            previous_state.get("status") not in active_breakdown_statuses
-            or next_support is None
-        ):
-            next_support = analyzer.find_next_support(
-                closed_candles,
-                support,
-                lookback=ANALYSIS_REPORT_LOOKBACK,
-            )
+        next_resistance = analyzer.find_next_resistance(
+            closed_candles, resistance, lookback=ANALYSIS_REPORT_LOOKBACK
+        )
+        next_support = analyzer.find_next_support(
+            closed_candles, support, lookback=ANALYSIS_REPORT_LOOKBACK
+        )
         signal, next_state = analyzer.generate_strategy_signal(
             closed_candles,
             support,
@@ -500,6 +480,9 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             minimum_next_resistance_atr=BREAKOUT_MINIMUM_NEXT_RESISTANCE_ATR,
             next_support=next_support,
             minimum_next_support_atr=BREAKDOWN_MINIMUM_NEXT_SUPPORT_ATR,
+            watch_max_candles=(
+                BREAKOUT_WATCH_MAX_CANDLES if timeframe == "4h" else None
+            ),
             bband_enabled=timeframe == "4h",
         )
         next_state["support"] = float(support)
@@ -532,6 +515,11 @@ async def main(symbol: str = "PAXG/USDT", timeframe: str = "4h") -> bool:
             next_resistance=next_resistance,
             next_support=next_support,
             strategy_state=next_state,
+            breakout_reference=(
+                next_state.get("breakout_resistance")
+                if _is_resistance_setup(signal)
+                else next_state.get("breakdown_support")
+            ),
         )
         logger.info("\n%s", signal_summary)
 

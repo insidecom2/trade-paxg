@@ -622,6 +622,34 @@ class ResistanceStrategyTests(unittest.TestCase):
         self.assertEqual(signal.action, "HOLD")
         self.assertEqual(state["resistance"], self.resistance)
 
+    def test_breakout_watch_expires_after_three_new_candles(self):
+        candles = make_uptrend_candles()
+        candles.append(
+            Candle(timestamp=220, open=408.0, high=410.0, low=406.0, close=409.0, volume=99.0)
+        )
+        previous_state = {
+            "level": "RESISTANCE",
+            "status": "BREAKOUT_WATCH",
+            "support": self.support,
+            "resistance": self.resistance,
+            "breakout_resistance": self.resistance,
+            "watch_candle_count": 2,
+            "last_candle_timestamp": 219,
+        }
+
+        signal, state = self.analyzer.generate_strategy_signal(
+            candles,
+            support=self.support,
+            resistance=415.0,
+            previous_state=previous_state,
+            market_price=411.0,
+            watch_max_candles=3,
+        )
+
+        self.assertEqual(signal.status, "NEUTRAL")
+        self.assertEqual(state["resistance"], 415.0)
+        self.assertNotIn("breakout_resistance", state)
+
     def test_support_watch_can_switch_to_resistance_breakout(self):
         candles = make_uptrend_candles()
         candles.append(
@@ -1019,6 +1047,45 @@ class DynamicLevelTests(unittest.TestCase):
         )
 
         self.assertEqual((support, resistance), (3.0, 7.0))
+
+    def test_active_breakout_refreshes_display_levels_after_a_new_closed_candle(self):
+        candles = [
+            Candle(
+                timestamp=index,
+                open=index + 0.5,
+                high=index + 1.0,
+                low=float(index),
+                close=index + 0.5,
+                volume=100.0,
+            )
+            for index in range(10)
+        ]
+        candles.append(
+            Candle(
+                timestamp=10,
+                open=10.5,
+                high=11.0,
+                low=10.0,
+                close=10.5,
+                volume=100.0,
+            )
+        )
+        previous_state = {
+            "status": "BREAKOUT_WATCH",
+            "support": 3.0,
+            "resistance": 7.0,
+            "levels_timestamp": 9,
+        }
+
+        support, resistance = resolve_dynamic_levels(
+            self.analyzer,
+            candles,
+            price=5.0,
+            previous_state=previous_state,
+            lookback=10,
+        )
+
+        self.assertEqual((support, resistance), (1.0, 11.0))
 
     def test_previous_levels_are_used_to_detect_first_breakout(self):
         candles = [

@@ -404,6 +404,7 @@ class MarketAnalyzer:
         market_price: Optional[float] = None,
         next_support: Optional[float] = None,
         minimum_next_support_atr: float = 1.5,
+        watch_max_candles: Optional[int] = None,
         bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates support tests, breakdowns, retests, and invalidations."""
@@ -423,7 +424,7 @@ class MarketAnalyzer:
 
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
-        tracked_support = float(state.get("support", support))
+        tracked_support = float(state.get("breakdown_support", state.get("support", support)))
         active_breakdown_statuses = {
             "BREAKDOWN_WATCH",
             "BREAKDOWN_CONFIRMED",
@@ -460,6 +461,9 @@ class MarketAnalyzer:
         reason = "No support strategy signal"
 
         active_breakdown = previous_status in active_breakdown_statuses
+        watch_candle_count = int(state.get("watch_candle_count", 0))
+        if active_breakdown and previous_status == "BREAKDOWN_WATCH" and is_new_candle:
+            watch_candle_count += 1
         if active_breakdown:
             if previous_status == "BREAKDOWN_WATCH":
                 watch_invalidated = (
@@ -472,6 +476,13 @@ class MarketAnalyzer:
             if watch_invalidated:
                 status = "BREAKDOWN_INVALIDATED"
                 reason = "Price reclaimed support; breakdown signal invalidated"
+            elif (
+                previous_status == "BREAKDOWN_WATCH"
+                and watch_max_candles is not None
+                and watch_candle_count >= watch_max_candles
+            ):
+                status = "NEUTRAL"
+                reason = "Breakdown watch expired without confirmation"
             elif previous_status == "BREAKDOWN_CONFIRMED":
                 retest_touched = is_new_candle and (
                     candle.timestamp > int(state.get("breakdown_timestamp", 0))
@@ -542,10 +553,14 @@ class MarketAnalyzer:
 
         next_state = {
             "status": status,
-            "support": tracked_support if active_breakdown else float(support),
+            "support": float(support),
             "last_candle_timestamp": candle_timestamp,
             "next_support_far_enough": next_support_far_enough,
         }
+        if status in active_breakdown_statuses:
+            next_state["breakdown_support"] = tracked_support if active_breakdown else float(support)
+        if status == "BREAKDOWN_WATCH":
+            next_state["watch_candle_count"] = watch_candle_count
         if tracked_next_support is not None:
             next_state["next_support"] = float(tracked_next_support)
         if current_atr is not None:
@@ -601,6 +616,7 @@ class MarketAnalyzer:
         market_price: Optional[float] = None,
         next_resistance: Optional[float] = None,
         minimum_next_resistance_atr: float = 1.5,
+        watch_max_candles: Optional[int] = None,
         bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Evaluates resistance tests, breakouts, retests, and invalidations."""
@@ -620,7 +636,7 @@ class MarketAnalyzer:
 
         state = dict(previous_state or {})
         previous_status = state.get("status", "NEUTRAL")
-        tracked_resistance = float(state.get("resistance", resistance))
+        tracked_resistance = float(state.get("breakout_resistance", state.get("resistance", resistance)))
         active_breakout_statuses = {
             "BREAKOUT_WATCH",
             "BREAKOUT_CONFIRMED",
@@ -657,6 +673,9 @@ class MarketAnalyzer:
         reason = "No resistance strategy signal"
 
         active_breakout = previous_status in active_breakout_statuses
+        watch_candle_count = int(state.get("watch_candle_count", 0))
+        if active_breakout and previous_status == "BREAKOUT_WATCH" and is_new_candle:
+            watch_candle_count += 1
         if active_breakout:
             if previous_status == "BREAKOUT_WATCH":
                 watch_invalidated = (
@@ -669,6 +688,13 @@ class MarketAnalyzer:
             if watch_invalidated:
                 status = "BREAKOUT_INVALIDATED"
                 reason = "Price fell back below resistance; breakout signal invalidated"
+            elif (
+                previous_status == "BREAKOUT_WATCH"
+                and watch_max_candles is not None
+                and watch_candle_count >= watch_max_candles
+            ):
+                status = "NEUTRAL"
+                reason = "Breakout watch expired without confirmation"
             elif previous_status == "BREAKOUT_CONFIRMED":
                 retest_held = is_new_candle and (
                     candle.timestamp > int(state.get("breakout_timestamp", 0))
@@ -739,10 +765,14 @@ class MarketAnalyzer:
 
         next_state = {
             "status": status,
-            "resistance": tracked_resistance if active_breakout else float(resistance),
+            "resistance": float(resistance),
             "last_candle_timestamp": candle_timestamp,
             "next_resistance_far_enough": next_resistance_far_enough,
         }
+        if status in active_breakout_statuses:
+            next_state["breakout_resistance"] = tracked_resistance if active_breakout else float(resistance)
+        if status == "BREAKOUT_WATCH":
+            next_state["watch_candle_count"] = watch_candle_count
         if tracked_next_resistance is not None:
             next_state["next_resistance"] = float(tracked_next_resistance)
         if current_atr is not None:
@@ -798,6 +828,7 @@ class MarketAnalyzer:
         minimum_next_resistance_atr: float = 1.5,
         next_support: Optional[float] = None,
         minimum_next_support_atr: float = 1.5,
+        watch_max_candles: Optional[int] = None,
         bband_enabled: bool = False,
     ) -> Tuple[Signal, Dict[str, Any]]:
         """Selects support or resistance strategy based on the active level."""
@@ -830,6 +861,7 @@ class MarketAnalyzer:
                 market_price=market_price,
                 next_resistance=next_resistance,
                 minimum_next_resistance_atr=minimum_next_resistance_atr,
+                watch_max_candles=watch_max_candles,
                 bband_enabled=bband_enabled,
             )
         else:
@@ -842,6 +874,7 @@ class MarketAnalyzer:
                 market_price=market_price,
                 next_support=next_support,
                 minimum_next_support_atr=minimum_next_support_atr,
+                watch_max_candles=watch_max_candles,
                 bband_enabled=bband_enabled,
             )
         next_state["level"] = level
