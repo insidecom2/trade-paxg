@@ -84,6 +84,29 @@ class SignalSummaryTests(unittest.TestCase):
         self.assertIn("BBands: Upper $108.00 | Middle $100.00 | Lower $92.00", message)
         self.assertIn("Score: 2/6", message)
 
+    def test_breakout_watch_shows_reference_and_current_levels(self):
+        signal = Signal(
+            action="HOLD",
+            position="RESISTANCE",
+            price=4618.81,
+            reason="Breakout watch active",
+            status="BREAKOUT_WATCH",
+        )
+
+        message = build_signal_summary(
+            "PAXG/USDT",
+            "4h",
+            signal,
+            support=4590.21,
+            resistance=4689.00,
+            current_price=4619.74,
+            breakout_reference=4528.97,
+        )
+
+        self.assertIn("Breakout Resistance: $4528.97 ✅", message)
+        self.assertIn("Current Resistance: $4689.00", message)
+        self.assertIn("Support: $4590.21", message)
+
     def test_missing_next_resistance_and_volume_are_safe(self):
         signal = Signal(
             action="HOLD",

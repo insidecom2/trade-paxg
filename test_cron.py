@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CRON_FILE = ROOT / "trade-paxg.cron"
 CRON_LAUNCHER = ROOT / "run_cron_job.sh"
+DOCKERFILE = ROOT / "Dockerfile"
 LOCK_COMMAND = "/usr/bin/flock -n /tmp/trade-paxg-"
 
 
@@ -19,10 +20,17 @@ def scheduled_entries() -> list[str]:
 
 
 class CronConfigurationTests(unittest.TestCase):
+    def test_cron_container_uses_bangkok_timezone(self):
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertIn("TZ=Asia/Bangkok", dockerfile)
+        self.assertIn("/usr/share/zoneinfo/$TZ /etc/localtime", dockerfile)
+        self.assertNotIn("CRON_TZ=", CRON_FILE.read_text(encoding="utf-8"))
+
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        self.assertEqual(len(entries), 3)
+        self.assertEqual(len(entries), 2)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
@@ -30,20 +38,17 @@ class CronConfigurationTests(unittest.TestCase):
     def test_4h_strategy_job_is_scheduled(self):
         entries = scheduled_entries()
 
-        self.assertTrue(
-            any("run_cron_job.sh 4h" in entry for entry in entries),
-            "expected a 4h strategy cron entry",
-        )
+        strategy_entries = [entry for entry in entries if "run_cron_job.sh 4h" in entry]
 
-    def test_hourly_exit_profit_job_is_scheduled(self):
+        self.assertEqual(len(strategy_entries), 1, "expected one 4h strategy cron entry")
+        self.assertTrue(strategy_entries[0].startswith("1 0,4,8,12,16,20 * * 1-5"))
+
+    def test_exit_profit_job_is_disabled(self):
         entries = scheduled_entries()
 
-        self.assertTrue(
-            any(
-                "run_exit_profit_job.sh" in entry and "/tmp/trade-paxg-exit.lock" in entry
-                for entry in entries
-            ),
-            "expected an hourly exit-profit cron entry",
+        self.assertFalse(
+            any("run_exit_profit_job.sh" in entry for entry in entries),
+            "exit-profit monitor must not have an active cron entry",
         )
 
     def test_liquidity_sweep_job_is_scheduled_within_bangkok_window(self):
