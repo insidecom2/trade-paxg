@@ -24,7 +24,7 @@ COPY --chown=app:app . .
 COPY --chown=root:root trade-paxg.cron /etc/cron.d/trade-paxg
 
 RUN chmod 0644 /etc/cron.d/trade-paxg
-RUN chmod 0755 /app/run_cron_job.sh /app/run_exit_profit_job.sh /app/run_liquidity_sweep_job.sh
+RUN chmod 0755 /app/run_cron_job.sh /app/run_exit_profit_job.sh /app/run_liquidity_sweep_job.sh /app/run_ai_daily_outlook_job.sh
 
 USER app
 

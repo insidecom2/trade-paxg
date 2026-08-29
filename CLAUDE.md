@@ -142,6 +142,34 @@ notification window — so it exercises the exact production code path offline (
 Telegram, no `trading_state.json` writes) and reports a funnel of where setups get
 invalidated plus win/loss/R-multiple stats for any completed entries.
 
+**AI Gold Trading Analyst** (`ai_analysis.py`) is a fourth, independent pipeline —
+**notification-only, no news integration in this increment**: once a day at 08:00
+Bangkok it builds a `DAILY_OUTLOOK` (bias, confidence, preferred strategy, S/R zones,
+bullish/bearish scenarios, invalidation) from indicators `analyzer.py` already computes
+(EMA trend, ATR, Bollinger, volume ratio, key levels, supply/demand zones) plus
+previous-day and Asian-session high/low reused from `liquidity_sweep.py`
+(`session_high_low`, `bangkok_now`, `ASIAN_SESSION_HOURS_UTC`), and sends the result to
+OpenAI's Responses API (`ai_client.py`, `client.responses.parse` with a pydantic
+`text_format` — Structured Outputs, so the model's output is schema-validated by
+construction, not parsed as free text). The prompt is centralized in `ai_prompts.py`
+(`AI_SYSTEM_PROMPT`); it explicitly instructs the model to treat all supplied market/news
+data as untrusted content, never as instructions, and to never invent missing
+prices/indicators/news. Economic news is out of scope for this increment — the request
+always marks `news_available=False` rather than silently omitting the topic.
+
+Gated by `AI_ANALYSIS_ENABLED` (default `false`) and requires `OPENAI_API_KEY`; either
+missing causes a clean skip (`ai.analysis.skipped`), not a crash — this pipeline can
+never affect the strategy, exit-profit, or liquidity-sweep pipelines. A schema-invalid or
+failed OpenAI response is retried once, then logged and dropped (no Telegram send, no
+garbage signal). Tracks state under `"{symbol}|ai_daily_outlook"` in `trading_state.json`
+keyed by Bangkok-local date + `status: "sent"`, so a duplicate cron fire or manual
+re-run the same day is a no-op; a prior `"failed"` run is retried on the next invocation
+rather than permanently skipped. `is_uptrend`/`is_downtrend` need 200+ candles for a
+valid EMA200, so this pipeline fetches 250 4h/1h candles for indicator accuracy even
+though only the computed `MarketSnapshot` (not raw candles) is ever sent to OpenAI — kept
+that way deliberately to control token usage. No auto-trading: this ever only sends a
+Telegram notification, exactly like the other three pipelines.
+
 ## Cron / deployment layout
 
 `trade-paxg.cron` (installed into the Docker image, `CRON_TZ=Asia/Bangkok`) runs, Mon–Fri:
@@ -149,12 +177,18 @@ invalidated plus win/loss/R-multiple stats for any completed entries.
 - `run_cron_job.sh 4h` every 4 hours, guarded by its own lock
 - `run_liquidity_sweep_job.sh` hourly from 12:00–21:00 Bangkok, guarded by
   `/tmp/trade-paxg-liquidity-sweep.lock`
+- `run_ai_daily_outlook_job.sh` once at 08:00 Bangkok, guarded by
+  `/tmp/trade-paxg-ai-daily-outlook.lock`
 
-Both shell scripts run as the `app` user (not root) and manually copy only the needed
-`TELEGRAM_*`/`TRADING_*`/`MYSQL_*`/`PRICE_SOURCE` vars out of `/proc/1/environ` — Debian
-cron starts jobs with a minimal environment, so this is how the container's `env_file`
-vars reach the job. `run_cron_job.sh` accepts a positional timeframe argument that
-overrides `TRADING_TIMEFRAME`.
+All cron entries are currently commented out in `trade-paxg.cron` (notifications
+disabled deployment-wide); run the shell scripts manually when needed.
+
+All shell scripts run as the `app` user (not root) and manually copy only the needed
+`TELEGRAM_*`/`TRADING_*`/`MYSQL_*`/`PRICE_SOURCE` vars (plus `OPENAI_*`/
+`AI_ANALYSIS_ENABLED` for `run_ai_daily_outlook_job.sh`) out of `/proc/1/environ` —
+Debian cron starts jobs with a minimal environment, so this is how the container's
+`env_file` vars reach the job. `run_cron_job.sh` accepts a positional timeframe argument
+that overrides `TRADING_TIMEFRAME`.
 
 `docker-compose.yml` currently only enables the cron container; the API service block is
 commented out.

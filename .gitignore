@@ -220,3 +220,4 @@ __marimo__/
 # Runtime trading state (local only; never commit)
 trading_state.json
 trading_state.json.tmp
+trading_state.json.lock
