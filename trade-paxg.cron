@@ -9,7 +9,25 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Exit-profit notifications are disabled. Run /app/run_exit_profit_job.sh manually when needed.
 # 1 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-exit.lock /app/run_exit_profit_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
 # 1 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-1h.lock /app/run_cron_job.sh 1h >> /proc/1/fd/1 2>> /proc/1/fd/2
-1 0,4,8,12,16,20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-4h.lock /app/run_cron_job.sh 4h >> /proc/1/fd/1 2>> /proc/1/fd/2
+# 4h strategy notifications are disabled. Run /app/run_cron_job.sh 4h manually when needed.
+# 1 0,4,8,12,16,20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-4h.lock /app/run_cron_job.sh 4h >> /proc/1/fd/1 2>> /proc/1/fd/2
 
 # Liquidity sweep watch on 1h, restricted to 12:00-21:00 Bangkok (CRON_TZ above), Mon-Fri.
-0 12-20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-liquidity-sweep.lock /app/run_liquidity_sweep_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+# Liquidity-sweep notifications are disabled. Run /app/run_liquidity_sweep_job.sh manually when needed.
+# 0 12-20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-liquidity-sweep.lock /app/run_liquidity_sweep_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+
+# AI Gold Trading Analyst — DAILY_OUTLOOK at 08:00 Bangkok, Mon-Fri. Gated by
+# AI_ANALYSIS_ENABLED and OPENAI_API_KEY at runtime.
+0 8 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-daily-outlook.lock /app/run_ai_daily_outlook_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+
+# AI Gold Trading Analyst — session-time stages, Mon-Fri, each chaining off
+# the prior stage's persisted result for today (see SESSION_STAGES in
+# ai_analysis.py). Same gating as DAILY_OUTLOOK above.
+# SESSION_PREPARATION (18:00) is deliberately left disabled — the other
+# three still run and report it as missing in previous_context_note rather
+# than blocking. Run /app/run_ai_session_stage_job.sh session_preparation
+# manually if needed.
+# 0 18 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-session-preparation.lock /app/run_ai_session_stage_job.sh session_preparation >> /proc/1/fd/1 2>> /proc/1/fd/2
+0 19 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-setup-detection.lock /app/run_ai_session_stage_job.sh setup_detection >> /proc/1/fd/1 2>> /proc/1/fd/2
+0 20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-setup-confirmation.lock /app/run_ai_session_stage_job.sh setup_confirmation >> /proc/1/fd/1 2>> /proc/1/fd/2
+0 21 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-final-session-decision.lock /app/run_ai_session_stage_job.sh final_session_decision >> /proc/1/fd/1 2>> /proc/1/fd/2
