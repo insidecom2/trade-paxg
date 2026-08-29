@@ -156,6 +156,24 @@ by construction, not parsed as free text). The prompt is centralized in `ai_prom
 data as untrusted content, never as instructions, and to never invent missing
 prices/indicators/news.
 
+**Session-time stages** extend the same pipeline to 18:00/19:00/20:00/21:00 Bangkok
+(`SESSION_PREPARATION`/`SETUP_DETECTION`/`SETUP_CONFIRMATION`/`FINAL_SESSION_DECISION`,
+`run_session_analysis` + the `SESSION_STAGES` config dict in `ai_analysis.py`). These four
+share one response schema (`SessionAnalysisResponse` in `ai_models.py`) instead of four
+bespoke ones — decision/confidence/entry/SL/TP/previous_thesis_status/reasoning cover all
+four slots' needs, with per-slot instructions in `ai_prompts.py` controlling which fields
+each one is expected to populate (e.g. `SESSION_PREPARATION` never sets entry/SL/TP,
+`SETUP_CONFIRMATION` always sets `previous_thesis_status`). Each stage chains off every
+earlier stage that ran *today* via `previous_context` — `_load_previous_stage_context`
+reads each required prior stage's persisted `ai_response` from `trading_state.json` (keyed
+by today's Bangkok date; a stage with no or stale-dated state is reported missing in
+`previous_context_note`, never silently treated as if it agreed with anything, and never
+blocks this run). Each of the five stages (including `DAILY_OUTLOOK`) has its own
+`trading_state.json` key suffix, so dedup and failure are fully independent per stage —
+`SESSION_PREPARATION` failing or being skipped one day doesn't affect `SETUP_DETECTION`'s
+ability to run later that day, it just shows up as a missing stage in that run's
+`previous_context_note`.
+
 **Macro data** (`fred_client.py`, `FredClient`) optionally adds the most recently
 *released* actual value for six US indicators (CPI, Core CPI, PCE, Non-farm Payrolls,
 Unemployment Rate, Fed Funds Rate) from the FRED (Federal Reserve) API, gated by
@@ -215,6 +233,9 @@ Telegram notification, exactly like the other three pipelines.
   `/tmp/trade-paxg-liquidity-sweep.lock`
 - `run_ai_daily_outlook_job.sh` once at 08:00 Bangkok, guarded by
   `/tmp/trade-paxg-ai-daily-outlook.lock`
+- `run_ai_session_stage_job.sh <stage>` once each at 18:00/19:00/20:00/21:00 Bangkok
+  (session_preparation/setup_detection/setup_confirmation/final_session_decision), each
+  guarded by its own `/tmp/trade-paxg-ai-<stage-with-dashes>.lock`
 
 All cron entries are currently commented out in `trade-paxg.cron` (notifications
 disabled deployment-wide); run the shell scripts manually when needed.
@@ -222,11 +243,12 @@ disabled deployment-wide); run the shell scripts manually when needed.
 All shell scripts run as the `app` user (not root) and manually copy only the needed
 `TELEGRAM_*`/`TRADING_*`/`PRICE_SOURCE` vars (plus `OPENAI_*`/`AI_ANALYSIS_ENABLED`/
 `AI_PRICE_SOURCE`/`AI_TRADING_SYMBOL`/`TWELVEDATA_API_KEY`/`FRED_API_KEY`/
-`AI_NEWS_CALENDAR_ENABLED` for
-`run_ai_daily_outlook_job.sh`) out of `/proc/1/environ` — Debian cron starts jobs with a
-minimal environment, so this is how the container's `env_file` vars reach the job.
-`run_cron_job.sh` accepts a positional timeframe argument
-that overrides `TRADING_TIMEFRAME`.
+`AI_NEWS_CALENDAR_ENABLED` for `run_ai_daily_outlook_job.sh`/`run_ai_session_stage_job.sh`)
+out of `/proc/1/environ` — Debian cron starts jobs with a minimal environment, so this is
+how the container's `env_file` vars reach the job. `run_cron_job.sh` accepts a positional
+timeframe argument that overrides `TRADING_TIMEFRAME`;
+`run_ai_session_stage_job.sh` requires a positional stage name (no environment fallback —
+each cron entry names its own stage explicitly).
 
 `docker-compose.yml` currently only enables the cron container; the API service block is
 commented out.

@@ -12,6 +12,7 @@ from ai_models import (
     GoldAIAnalysisRequest,
     MacroDataPoint,
     MarketSnapshot,
+    SessionAnalysisResponse,
 )
 from ai_prompts import AI_SYSTEM_PROMPT
 from fred_client import FredClient
@@ -44,6 +45,24 @@ def sample_response(**overrides):
     )
     fields.update(overrides)
     return DailyOutlookResponse(**fields)
+
+
+def sample_session_response(**overrides):
+    fields = dict(
+        decision="SELL_SETUP",
+        confidence=72,
+        entry_from=2010.0,
+        entry_to=2012.0,
+        confirmation_description="15M close below 2008",
+        stop_loss=2018.0,
+        take_profit_1=1998.0,
+        take_profit_2=1990.0,
+        invalidation="15M close above 2018",
+        reasons=["Asian High swept", "M15 rejection"],
+        reasoning="Liquidity sweep at Asian High followed by rejection",
+    )
+    fields.update(overrides)
+    return SessionAnalysisResponse(**fields)
 
 
 class FakeMarketData:
@@ -342,6 +361,201 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
                     "PAXG/USDT", now=datetime(2024, 1, 8, 1, 0, tzinfo=timezone.utc)
                 )
         factory.assert_called_once_with("twelvedata")
+
+
+class RunSessionAnalysisTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        env_clear_patch = patch.dict(
+            "os.environ",
+            {
+                "AI_TRADING_SYMBOL": "",
+                "AI_PRICE_SOURCE": "",
+                "FRED_API_KEY": "",
+                "AI_NEWS_CALENDAR_ENABLED": "false",
+            },
+        )
+        env_clear_patch.start()
+        self.addCleanup(env_clear_patch.stop)
+
+        fred_patch = patch("ai_analysis.FredClient.from_env", return_value=None)
+        fred_patch.start()
+        self.addCleanup(fred_patch.stop)
+
+        self._tmpdir = TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._state_path = Path(self._tmpdir.name) / "trading_state.json"
+        self._store_patch = patch(
+            "ai_analysis.TradingStateStore", lambda: TradingStateStore(self._state_path)
+        )
+        self._store_patch.start()
+        self.addCleanup(self._store_patch.stop)
+
+        self._market_data = FakeMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1h": make_candles(250, step_ms=3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        self._create_market_data_patch = patch(
+            "ai_analysis.create_market_data_manager", lambda source=None: self._market_data
+        )
+        self._create_market_data_patch.start()
+        self.addCleanup(self._create_market_data_patch.stop)
+
+    async def test_unknown_stage_raises(self):
+        with self.assertRaises(ValueError):
+            await ai_analysis.run_session_analysis("not_a_stage", "PAXG/USDT")
+
+    async def test_setup_detection_chains_prior_daily_outlook(self):
+        # Seed today's DAILY_OUTLOOK state as if it already ran.
+        now = datetime(2024, 1, 8, 12, 0, tzinfo=timezone.utc)
+        local_date = ai_analysis.bangkok_now(now).strftime("%Y-%m-%d")
+        store = TradingStateStore(self._state_path)
+        store.save("PAXG/USDT|ai_daily_outlook", {
+            "date": local_date,
+            "status": "sent",
+            "ai_response": {"daily_bias": "BULLISH", "confidence": 70},
+        })
+
+        captured_payload = {}
+
+        def capture_analyze(system_prompt, user_payload, response_model):
+            captured_payload["text"] = user_payload
+            return sample_session_response()
+
+        fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
+        with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true", "OPENAI_API_KEY": "x"}):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
+                 patch.object(fake_client, "analyze", side_effect=capture_analyze), \
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
+                result = await ai_analysis.run_session_analysis(
+                    "setup_detection", "PAXG/USDT", now=now
+                )
+
+        self.assertTrue(result)
+        self.assertIn("ai_daily_outlook", captured_payload["text"])
+        self.assertIn("BULLISH", captured_payload["text"])
+
+        state = TradingStateStore(self._state_path).get("PAXG/USDT|ai_setup_detection")
+        self.assertEqual(state.get("status"), "sent")
+        self.assertEqual(state.get("decision"), "SELL_SETUP")
+
+    async def test_missing_prior_stage_does_not_block_run(self):
+        # No prior DAILY_OUTLOOK seeded — session_preparation should still
+        # run, just with previous_context noting it's missing.
+        fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
+        with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true", "OPENAI_API_KEY": "x"}):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
+                 patch.object(fake_client, "analyze", return_value=sample_session_response()), \
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
+                result = await ai_analysis.run_session_analysis(
+                    "session_preparation", "PAXG/USDT",
+                    now=datetime(2024, 1, 8, 12, 0, tzinfo=timezone.utc),
+                )
+        self.assertTrue(result)
+        notifier.send_message.assert_awaited_once()
+
+    async def test_dedup_is_independent_per_stage(self):
+        # Seed DAILY_OUTLOOK as already sent today; running
+        # session_preparation must NOT be treated as a duplicate of it —
+        # each stage has its own state key.
+        now = datetime(2024, 1, 8, 12, 0, tzinfo=timezone.utc)
+        local_date = ai_analysis.bangkok_now(now).strftime("%Y-%m-%d")
+        store = TradingStateStore(self._state_path)
+        store.save("PAXG/USDT|ai_daily_outlook", {"date": local_date, "status": "sent"})
+
+        fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
+        with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true", "OPENAI_API_KEY": "x"}):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
+                 patch.object(fake_client, "analyze", return_value=sample_session_response()), \
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
+                result = await ai_analysis.run_session_analysis(
+                    "session_preparation", "PAXG/USDT", now=now
+                )
+        self.assertTrue(result)
+        notifier.send_message.assert_awaited_once()
+
+    async def test_openai_failure_does_not_crash_session_stage(self):
+        fake_client = AIAnalysisClient(api_key="x")
+        with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true", "OPENAI_API_KEY": "x"}):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
+                 patch.object(fake_client, "analyze", return_value=None), \
+                 patch("ai_analysis.TelegramNotifier.from_env") as notifier_from_env:
+                result = await ai_analysis.run_session_analysis(
+                    "final_session_decision", "PAXG/USDT",
+                    now=datetime(2024, 1, 8, 12, 0, tzinfo=timezone.utc),
+                )
+        self.assertTrue(result)
+        notifier_from_env.assert_not_called()
+
+
+class LoadPreviousStageContextTests(unittest.TestCase):
+    def test_missing_stage_reported_not_blocking(self):
+        with TemporaryDirectory() as tmpdir:
+            store = TradingStateStore(Path(tmpdir) / "trading_state.json")
+            context_json, note = ai_analysis._load_previous_stage_context(
+                store, "PAXG/USDT", "2024-01-08", ["ai_daily_outlook"]
+            )
+        self.assertEqual(context_json, "{}")
+        self.assertIn("No prior analysis", note)
+
+    def test_stale_date_treated_as_missing(self):
+        with TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "trading_state.json"
+            store = TradingStateStore(state_path)
+            store.save("PAXG/USDT|ai_daily_outlook", {
+                "date": "2024-01-07",  # yesterday, not today
+                "status": "sent",
+                "ai_response": {"daily_bias": "BULLISH"},
+            })
+            context_json, note = ai_analysis._load_previous_stage_context(
+                store, "PAXG/USDT", "2024-01-08", ["ai_daily_outlook"]
+            )
+        self.assertEqual(context_json, "{}")
+
+    def test_partial_availability_lists_missing_stages(self):
+        with TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "trading_state.json"
+            store = TradingStateStore(state_path)
+            store.save("PAXG/USDT|ai_daily_outlook", {
+                "date": "2024-01-08", "status": "sent", "ai_response": {"daily_bias": "BULLISH"},
+            })
+            context_json, note = ai_analysis._load_previous_stage_context(
+                store, "PAXG/USDT", "2024-01-08", ["ai_daily_outlook", "ai_session_preparation"]
+            )
+        self.assertIn("ai_daily_outlook", context_json)
+        self.assertIn("ai_session_preparation", note)
+
+
+class FormatSessionAnalysisMessageTests(unittest.TestCase):
+    def test_wait_decision_and_confirmation_are_visible(self):
+        response = sample_session_response(
+            decision="WAIT",
+            entry_from=None, entry_to=None, stop_loss=None,
+            take_profit_1=None, take_profit_2=None,
+            confirmation_description="15M close below 4623",
+        )
+        message = ai_analysis.format_session_analysis_message(
+            "PAXG/USDT", "SETUP_DETECTION", response
+        )
+        self.assertIn("WAIT", message)
+        self.assertIn("15M close below 4623", message)
+        self.assertNotIn("Stop Loss", message)  # None fields must not render
+
+    def test_full_setup_fields_render(self):
+        response = sample_session_response()
+        message = ai_analysis.format_session_analysis_message(
+            "PAXG/USDT", "SETUP_DETECTION", response
+        )
+        self.assertIn("SELL_SETUP", message)
+        self.assertIn("2010.00", message)
+        self.assertIn("Stop Loss: 2018.00", message)
+        self.assertIn("TP1: 1998.00", message)
 
 
 class FormatDailyOutlookMessageTests(unittest.TestCase):

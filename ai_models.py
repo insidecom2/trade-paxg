@@ -32,6 +32,41 @@ class DailyOutlookResponse(BaseModel):
     reasoning: str
 
 
+TradeDecision = Literal["BUY_SETUP", "SELL_SETUP", "WAIT", "NO_TRADE"]
+PreviousThesisStatus = Literal["CONFIRMED", "STILL_VALID", "WEAKENING", "INVALIDATED", "COMPLETED"]
+MarketCondition = Literal[
+    "LIQUIDITY_SWEEP", "BREAKOUT_RETEST", "TREND_CONTINUATION", "REVERSAL", "RANGE", "UNCLEAR"
+]
+
+
+class SessionAnalysisResponse(BaseModel):
+    """Shared response shape for the four session-time analysis types
+    (SESSION_PREPARATION, SETUP_DETECTION, SETUP_CONFIRMATION,
+    FINAL_SESSION_DECISION). One schema instead of four keeps the overlap
+    (decision/confidence/entry/SL/TP/reasoning) in one place; fields a
+    given slot doesn't use are simply left None — see DAILY_OUTLOOK_
+    INSTRUCTION-equivalent per-slot instructions in ai_prompts.py for what
+    each slot is expected to populate.
+    """
+    decision: TradeDecision
+    confidence: int = Field(ge=0, le=100)
+    previous_thesis_status: Optional[PreviousThesisStatus] = None
+    market_condition: Optional[MarketCondition] = None
+    entry_from: Optional[float] = None
+    entry_to: Optional[float] = None
+    confirmation_description: Optional[str] = None
+    stop_loss: Optional[float] = None
+    take_profit_1: Optional[float] = None
+    take_profit_2: Optional[float] = None
+    invalidation: Optional[str] = None
+    buy_scenario: Optional[str] = None
+    sell_scenario: Optional[str] = None
+    reasons: List[str] = Field(default_factory=list)
+    risk_factors: List[str] = Field(default_factory=list)
+    avoid_notes: Optional[str] = None
+    reasoning: str
+
+
 class MacroDataPoint(BaseModel):
     indicator: str  # e.g. "CPI (headline)", "Non-farm Payrolls"
     period: str     # e.g. "2026-07-01" — the data period, not a release date
@@ -93,4 +128,12 @@ class GoldAIAnalysisRequest(BaseModel):
     todays_usd_high_impact_events: List[EconomicEvent] = Field(default_factory=list)
     news_calendar_note: str = (
         "No forward-looking news calendar is supplied for this analysis type."
+    )
+
+    # Compact JSON summary of the prior stage(s) this run should build on
+    # (e.g. SETUP_DETECTION includes DAILY_OUTLOOK + SESSION_PREPARATION).
+    # Empty for DAILY_OUTLOOK, which has no prior stage same-day.
+    previous_context: str = ""
+    previous_context_note: str = (
+        "No prior analysis from earlier today is supplied for this analysis type."
     )

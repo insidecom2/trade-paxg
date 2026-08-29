@@ -14,6 +14,7 @@ No automatic trade execution.
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -22,8 +23,20 @@ from typing import List, Optional
 from dotenv import load_dotenv
 
 from ai_client import AIAnalysisClient
-from ai_models import DailyOutlookResponse, GoldAIAnalysisRequest, MarketSnapshot
-from ai_prompts import AI_SYSTEM_PROMPT, DAILY_OUTLOOK_INSTRUCTION
+from ai_models import (
+    DailyOutlookResponse,
+    GoldAIAnalysisRequest,
+    MarketSnapshot,
+    SessionAnalysisResponse,
+)
+from ai_prompts import (
+    AI_SYSTEM_PROMPT,
+    DAILY_OUTLOOK_INSTRUCTION,
+    FINAL_SESSION_DECISION_INSTRUCTION,
+    SESSION_PREPARATION_INSTRUCTION,
+    SETUP_CONFIRMATION_INSTRUCTION,
+    SETUP_DETECTION_INSTRUCTION,
+)
 from analyzer import MarketAnalyzer
 from exchange_manager import create_market_data_manager
 from fred_client import FredClient
@@ -57,6 +70,41 @@ DAILY_CANDLE_LIMIT = 3
 
 STATE_KEY_SUFFIX = "ai_daily_outlook"
 ANALYSIS_TYPE = "DAILY_OUTLOOK"
+
+# The four session-time stages, in chronological order. Each stage's
+# previous_context is built from every earlier stage's persisted AI
+# response for *today only* — a stage that hasn't run yet today (disabled,
+# cron didn't fire, still pending) is simply reported as missing in
+# previous_context_note rather than blocking this run.
+SESSION_STAGES = {
+    "session_preparation": {
+        "analysis_type": "SESSION_PREPARATION",
+        "state_key_suffix": "ai_session_preparation",
+        "instruction": SESSION_PREPARATION_INSTRUCTION,
+        "requires": ["ai_daily_outlook"],
+    },
+    "setup_detection": {
+        "analysis_type": "SETUP_DETECTION",
+        "state_key_suffix": "ai_setup_detection",
+        "instruction": SETUP_DETECTION_INSTRUCTION,
+        "requires": ["ai_daily_outlook", "ai_session_preparation"],
+    },
+    "setup_confirmation": {
+        "analysis_type": "SETUP_CONFIRMATION",
+        "state_key_suffix": "ai_setup_confirmation",
+        "instruction": SETUP_CONFIRMATION_INSTRUCTION,
+        "requires": ["ai_daily_outlook", "ai_session_preparation", "ai_setup_detection"],
+    },
+    "final_session_decision": {
+        "analysis_type": "FINAL_SESSION_DECISION",
+        "state_key_suffix": "ai_final_session_decision",
+        "instruction": FINAL_SESSION_DECISION_INSTRUCTION,
+        "requires": [
+            "ai_daily_outlook", "ai_session_preparation",
+            "ai_setup_detection", "ai_setup_confirmation",
+        ],
+    },
+}
 
 
 def _analysis_enabled() -> bool:
@@ -178,22 +226,23 @@ async def _fetch_news_calendar(
     return events, note
 
 
-async def build_daily_outlook_context(
+async def _gather_common_context(
     symbol: str,
     market_data,
     analyzer: MarketAnalyzer,
-    reference_time: Optional[datetime] = None,
-    fred_client: Optional[FredClient] = None,
-    news_calendar_client: Optional[NewsCalendarClient] = None,
-) -> Optional[GoldAIAnalysisRequest]:
-    reference_time = reference_time or datetime.now(timezone.utc)
-
+    reference_time: datetime,
+    fred_client: Optional[FredClient],
+    news_calendar_client: Optional[NewsCalendarClient],
+) -> Optional[dict]:
+    """Market/indicator/macro/news fields shared by every analysis type.
+    Returns None if there isn't enough candle history to proceed.
+    """
     candles_4h = _closed_candles(await market_data.fetch_ohlcv(symbol, H4_TIMEFRAME, limit=H4_CANDLE_LIMIT))
     candles_1h = _closed_candles(await market_data.fetch_ohlcv(symbol, H1_TIMEFRAME, limit=H1_CANDLE_LIMIT))
     candles_1d = _closed_candles(await market_data.fetch_ohlcv(symbol, DAILY_TIMEFRAME, limit=DAILY_CANDLE_LIMIT))
 
     if not candles_4h or not candles_1h:
-        logger.warning("Missing 4h/1h candles; cannot build DAILY_OUTLOOK context.")
+        logger.warning("Missing 4h/1h candles; cannot build analysis context.")
         return None
 
     current_price = candles_1h[-1].close
@@ -206,8 +255,8 @@ async def build_daily_outlook_context(
 
     # find_snd_zones returns every unfiltered zone across the whole candle
     # history (dozens on 250 candles) — find_recent_snd_zones limits that to
-    # the zones nearest the current price, which is what's relevant to a
-    # daily outlook and keeps the OpenAI payload small.
+    # the zones nearest the current price, which is what's relevant here and
+    # keeps the OpenAI payload small.
     supply_demand = analyzer.find_recent_snd_zones(candles_1h, current_price, limit=6)
     supply_zones = [z for z in supply_demand if z.type == "SUPPLY"]
     demand_zones = [z for z in supply_demand if z.type == "DEMAND"]
@@ -215,11 +264,7 @@ async def build_daily_outlook_context(
     macro_data, macro_note = await _fetch_macro_data(fred_client)
     news_events, news_note = await _fetch_news_calendar(news_calendar_client, reference_time)
 
-    return GoldAIAnalysisRequest(
-        analysis_type=ANALYSIS_TYPE,
-        requested_at=reference_time.isoformat(),
-        timezone="Asia/Bangkok",
-        symbol=symbol,
+    return dict(
         current_price=current_price,
         h4=_build_market_snapshot(analyzer, candles_4h),
         h1=_build_market_snapshot(analyzer, candles_1h),
@@ -234,6 +279,113 @@ async def build_daily_outlook_context(
         todays_usd_high_impact_events=news_events,
         news_calendar_note=news_note,
     )
+
+
+async def build_daily_outlook_context(
+    symbol: str,
+    market_data,
+    analyzer: MarketAnalyzer,
+    reference_time: Optional[datetime] = None,
+    fred_client: Optional[FredClient] = None,
+    news_calendar_client: Optional[NewsCalendarClient] = None,
+) -> Optional[GoldAIAnalysisRequest]:
+    reference_time = reference_time or datetime.now(timezone.utc)
+    common = await _gather_common_context(
+        symbol, market_data, analyzer, reference_time, fred_client, news_calendar_client
+    )
+    if common is None:
+        return None
+
+    return GoldAIAnalysisRequest(
+        analysis_type=ANALYSIS_TYPE,
+        requested_at=reference_time.isoformat(),
+        timezone="Asia/Bangkok",
+        symbol=symbol,
+        **common,
+    )
+
+
+async def build_session_context(
+    stage_key: str,
+    symbol: str,
+    market_data,
+    analyzer: MarketAnalyzer,
+    reference_time: Optional[datetime] = None,
+    fred_client: Optional[FredClient] = None,
+    news_calendar_client: Optional[NewsCalendarClient] = None,
+    previous_context: str = "",
+    previous_context_note: str = "",
+) -> Optional[GoldAIAnalysisRequest]:
+    reference_time = reference_time or datetime.now(timezone.utc)
+    common = await _gather_common_context(
+        symbol, market_data, analyzer, reference_time, fred_client, news_calendar_client
+    )
+    if common is None:
+        return None
+
+    return GoldAIAnalysisRequest(
+        analysis_type=SESSION_STAGES[stage_key]["analysis_type"],
+        requested_at=reference_time.isoformat(),
+        timezone="Asia/Bangkok",
+        symbol=symbol,
+        previous_context=previous_context,
+        previous_context_note=previous_context_note or (
+            "No prior analysis from earlier today is supplied for this analysis type."
+        ),
+        **common,
+    )
+
+
+def _load_previous_stage_context(
+    state_store: TradingStateStore, symbol: str, local_date: str, required_suffixes: List[str]
+) -> tuple:
+    """Reads each required earlier stage's persisted AI response for
+    *today only* and serializes it for the prompt. A stage that hasn't
+    run yet today (disabled, not yet fired, or failed) is reported as
+    missing in the note rather than blocking this run — the model is
+    instructed not to treat a missing stage as evidence of anything.
+    """
+    context = {}
+    missing = []
+    for suffix in required_suffixes:
+        state = state_store.get(f"{symbol}|{suffix}")
+        if state.get("date") == local_date and state.get("status") == "sent":
+            context[suffix] = state.get("ai_response", {})
+        else:
+            missing.append(suffix)
+
+    if not context:
+        note = "No prior analysis from earlier today is supplied for this analysis type."
+    elif missing:
+        note = (
+            f"Prior analysis is included for: {sorted(context.keys())}. "
+            f"Missing/not yet run today: {missing}. Treat a missing stage as "
+            "simply unavailable, not as evidence of anything."
+        )
+    else:
+        note = (
+            "Includes every expected prior analysis from earlier today, taken "
+            "from each stage's persisted AI response only."
+        )
+    return json.dumps(context, ensure_ascii=False), note
+
+
+def _format_todays_events_block(todays_events: Optional[List]) -> List[str]:
+    """Rendered directly from the calendar source, not the AI response, so
+    today's schedule is always shown accurately regardless of whether the
+    model chose to mention it in its narrative fields."""
+    if not todays_events:
+        return []
+    lines = ["", "ข่าววันนี้ (USD กล่องแดง):"]
+    for event in todays_events:
+        local_time = (
+            datetime.fromisoformat(event.scheduled_time).astimezone(BANGKOK_TZ).strftime("%H:%M")
+        )
+        detail = f"{local_time} {event.title}"
+        if event.forecast:
+            detail += f" (คาดการณ์ {event.forecast}, ครั้งก่อน {event.previous or '-'})"
+        lines.append(f"- {detail}")
+    return lines
 
 
 def format_daily_outlook_message(
@@ -256,22 +408,7 @@ def format_daily_outlook_message(
     if response.liquidity_targets:
         lines.append(f"เป้าหมาย Liquidity: {', '.join(response.liquidity_targets)}")
 
-    # Rendered directly from the calendar source, not the AI response, so
-    # today's schedule is always shown accurately regardless of whether the
-    # model chose to mention it in its narrative fields.
-    if todays_events:
-        lines.append("")
-        lines.append("ข่าววันนี้ (USD กล่องแดง):")
-        for event in todays_events:
-            local_time = (
-                datetime.fromisoformat(event.scheduled_time)
-                .astimezone(BANGKOK_TZ)
-                .strftime("%H:%M")
-            )
-            detail = f"{local_time} {event.title}"
-            if event.forecast:
-                detail += f" (คาดการณ์ {event.forecast}, ครั้งก่อน {event.previous or '-'})"
-            lines.append(f"- {detail}")
+    lines += _format_todays_events_block(todays_events)
 
     lines += [
         "",
@@ -281,6 +418,62 @@ def format_daily_outlook_message(
     ]
     if response.avoid_chasing_notes:
         lines.append(f"ข้อควรระวัง: {response.avoid_chasing_notes}")
+    lines += ["", f"เหตุผล: {response.reasoning}"]
+    return "\n".join(lines)
+
+
+SESSION_STAGE_LABELS = {
+    "SESSION_PREPARATION": "เตรียมเซสชัน 18:00",
+    "SETUP_DETECTION": "หา Setup 19:00",
+    "SETUP_CONFIRMATION": "ยืนยัน Setup 20:00",
+    "FINAL_SESSION_DECISION": "สรุปเซสชัน 21:00",
+}
+
+
+def format_session_analysis_message(
+    symbol: str,
+    analysis_type: str,
+    response: SessionAnalysisResponse,
+    todays_events: Optional[List] = None,
+) -> str:
+    label = SESSION_STAGE_LABELS.get(analysis_type, analysis_type)
+    lines = [
+        f"GOLD AI ANALYSIS — {label}",
+        "",
+        f"สัญลักษณ์: {symbol}",
+        f"การตัดสินใจ: {response.decision}",
+        f"ความมั่นใจ: {response.confidence}%",
+    ]
+    if response.previous_thesis_status:
+        lines.append(f"สถานะ thesis ก่อนหน้า: {response.previous_thesis_status}")
+    if response.market_condition:
+        lines.append(f"สภาวะตลาด: {response.market_condition}")
+    if response.entry_from is not None and response.entry_to is not None:
+        lines.append(f"โซนเข้า: {response.entry_from:.2f} - {response.entry_to:.2f}")
+    if response.confirmation_description:
+        lines.append(f"เงื่อนไขยืนยัน: {response.confirmation_description}")
+    if response.stop_loss is not None:
+        lines.append(f"Stop Loss: {response.stop_loss:.2f}")
+    if response.take_profit_1 is not None:
+        lines.append(f"TP1: {response.take_profit_1:.2f}")
+    if response.take_profit_2 is not None:
+        lines.append(f"TP2: {response.take_profit_2:.2f}")
+
+    lines += _format_todays_events_block(todays_events)
+
+    lines.append("")
+    if response.buy_scenario:
+        lines.append(f"สถานการณ์ Buy: {response.buy_scenario}")
+    if response.sell_scenario:
+        lines.append(f"สถานการณ์ Sell: {response.sell_scenario}")
+    if response.invalidation:
+        lines.append(f"จุดยกเลิกมุมมอง: {response.invalidation}")
+    if response.reasons:
+        lines.append("เหตุผลสนับสนุน: " + "; ".join(response.reasons))
+    if response.risk_factors:
+        lines.append("ปัจจัยเสี่ยง: " + "; ".join(response.risk_factors))
+    if response.avoid_notes:
+        lines.append(f"ข้อควรระวัง: {response.avoid_notes}")
     lines += ["", f"เหตุผล: {response.reasoning}"]
     return "\n".join(lines)
 
@@ -374,12 +567,130 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
             await market_data.close()
 
 
+async def run_session_analysis(
+    stage_key: str, symbol: str = "PAXG/USDT", now: Optional[datetime] = None
+) -> bool:
+    """Runs one of the four session-time stages (see SESSION_STAGES).
+    Same shape as run_daily_outlook: feature-flagged, fails soft on any
+    external dependency, dedups per Bangkok-local day, never raises out
+    to the caller except for a caught-and-logged critical failure.
+    """
+    if stage_key not in SESSION_STAGES:
+        raise ValueError(f"Unknown session stage: {stage_key}")
+    stage = SESSION_STAGES[stage_key]
+    analysis_type = stage["analysis_type"]
+    state_key_suffix = stage["state_key_suffix"]
+
+    symbol = _resolve_symbol(symbol)
+    if not _analysis_enabled():
+        logger.info("ai.analysis.skipped reason=disabled analysisType=%s symbol=%s", analysis_type, symbol)
+        return True
+
+    ai_client = AIAnalysisClient.from_env()
+    if ai_client is None:
+        logger.info("ai.analysis.skipped reason=missing_api_key analysisType=%s symbol=%s", analysis_type, symbol)
+        return True
+
+    reference_time = now or datetime.now(timezone.utc)
+    local_date = bangkok_now(reference_time).strftime("%Y-%m-%d")
+    state_store = TradingStateStore()
+    state_key = f"{symbol}|{state_key_suffix}"
+    state = state_store.get(state_key)
+    if state.get("date") == local_date and state.get("status") == "sent":
+        logger.info(
+            "ai.analysis.skipped reason=duplicate analysisType=%s symbol=%s date=%s",
+            analysis_type, symbol, local_date,
+        )
+        return True
+
+    logger.info("ai.analysis.started analysisType=%s symbol=%s", analysis_type, symbol)
+    market_data = None
+    try:
+        previous_context, previous_context_note = _load_previous_stage_context(
+            state_store, symbol, local_date, stage["requires"]
+        )
+
+        market_data = create_market_data_manager(_resolve_price_source())
+        analyzer = MarketAnalyzer()
+        fred_client = FredClient.from_env()
+        news_calendar_client = NewsCalendarClient() if _news_calendar_enabled() else None
+        request = await build_session_context(
+            stage_key, symbol, market_data, analyzer, reference_time,
+            fred_client, news_calendar_client, previous_context, previous_context_note,
+        )
+        if request is None:
+            logger.warning("ai.analysis.skipped reason=missing_market_data analysisType=%s symbol=%s", analysis_type, symbol)
+            return True
+
+        user_payload = (
+            f"{stage['instruction']}\n\nMARKET_DATA (JSON):\n"
+            f"{request.model_dump_json(indent=2)}"
+        )
+        response = await asyncio.to_thread(
+            ai_client.analyze, AI_SYSTEM_PROMPT, user_payload, SessionAnalysisResponse
+        )
+
+        if response is None:
+            logger.warning("ai.analysis.failed analysisType=%s symbol=%s reason=invalid_or_no_response", analysis_type, symbol)
+            state_store.save(state_key, {
+                "date": local_date,
+                "analyzed_at": reference_time.isoformat(),
+                "status": "failed",
+                "error_message": "OpenAI response missing or failed schema validation",
+            })
+            return True
+
+        message = format_session_analysis_message(
+            symbol, analysis_type, response, request.todays_usd_high_impact_events
+        )
+        notifier = TelegramNotifier.from_env()
+        sent = False
+        if notifier is not None:
+            sent = await notifier.send_message(message)
+        else:
+            logger.warning("telegram.ai_alert.skipped reason=notifier_unavailable analysisType=%s", analysis_type)
+        if sent:
+            logger.info("telegram.ai_alert.sent analysisType=%s symbol=%s", analysis_type, symbol)
+
+        state_store.save(state_key, {
+            "date": local_date,
+            "analyzed_at": reference_time.isoformat(),
+            "status": "sent",
+            "current_price": request.current_price,
+            "decision": response.decision,
+            "confidence": response.confidence,
+            "previous_thesis_status": response.previous_thesis_status,
+            "input_snapshot": request.model_dump(),
+            "ai_response": response.model_dump(),
+        })
+        logger.info(
+            "ai.analysis.completed analysisType=%s symbol=%s decision=%s confidence=%d",
+            analysis_type, symbol, response.decision, response.confidence,
+        )
+        return True
+    except Exception as e:
+        logger.critical("ai.analysis.failed analysisType=%s symbol=%s error=%s", analysis_type, symbol, e, exc_info=True)
+        return False
+    finally:
+        if market_data is not None:
+            await market_data.close()
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="AI Gold Trading Analyst — DAILY_OUTLOOK")
+    parser = argparse.ArgumentParser(description="AI Gold Trading Analyst")
     parser.add_argument("--symbol", default="PAXG/USDT", help="Trading pair, e.g. PAXG/USDT")
+    parser.add_argument(
+        "--stage",
+        default="daily_outlook",
+        choices=["daily_outlook", *SESSION_STAGES.keys()],
+        help="Which analysis stage to run (default: daily_outlook)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(run_daily_outlook(symbol=args.symbol))
+    if args.stage == "daily_outlook":
+        asyncio.run(run_daily_outlook(symbol=args.symbol))
+    else:
+        asyncio.run(run_session_analysis(args.stage, symbol=args.symbol))

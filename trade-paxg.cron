@@ -21,3 +21,12 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # the rest of this file until those are provisioned. Run
 # /app/run_ai_daily_outlook_job.sh manually to test.
 # 0 8 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-daily-outlook.lock /app/run_ai_daily_outlook_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+
+# AI Gold Trading Analyst — session-time stages, Mon-Fri, each chaining off
+# the prior stage's persisted result for today (see SESSION_STAGES in
+# ai_analysis.py). Same gating as DAILY_OUTLOOK above; disabled here to
+# match. Run /app/run_ai_session_stage_job.sh <stage> manually to test.
+# 0 18 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-session-preparation.lock /app/run_ai_session_stage_job.sh session_preparation >> /proc/1/fd/1 2>> /proc/1/fd/2
+# 0 19 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-setup-detection.lock /app/run_ai_session_stage_job.sh setup_detection >> /proc/1/fd/1 2>> /proc/1/fd/2
+# 0 20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-setup-confirmation.lock /app/run_ai_session_stage_job.sh setup_confirmation >> /proc/1/fd/1 2>> /proc/1/fd/2
+# 0 21 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-ai-final-session-decision.lock /app/run_ai_session_stage_job.sh final_session_decision >> /proc/1/fd/1 2>> /proc/1/fd/2
