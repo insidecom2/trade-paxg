@@ -167,8 +167,31 @@ request always states that scope explicitly, whether or not any data point was f
 so the model never assumes it also knows what's scheduled to release today or what the
 market expected. A FRED failure is caught in `_fetch_macro_data` and never aborts the
 rest of the analysis — same fault-isolation principle as everything else in this module.
-A same-day-aware news calendar (e.g. hardcoding the publicly-known FOMC meeting schedule)
-and a real forecast-capable provider are both out of scope for this increment.
+
+**Forward-looking news calendar** (`news_calendar_client.py`, `NewsCalendarClient`)
+fills the gap FRED can't: today's scheduled USD high-impact ("red folder") events
+(title, scheduled time, forecast, previous), gated by `AI_NEWS_CALENDAR_ENABLED`
+(default `true`, no API key needed). Source is
+`https://nfs.faireconomy.media/ff_calendar_thisweek.json` — the JSON feed behind Forex
+Factory's own embeddable calendar widget, not the forexfactory.com HTML page (scraping
+that would violate their ToS; this wasn't done). Two things were verified directly
+against the live feed before relying on them, not assumed from documentation: it has
+**no "actual"/reported-value field at all** (checked 72 events, zero had one — Finnhub's
+and Financial Modeling Prep's calendar endpoints were tried first and both came back
+402/403 paid-tier-only), and the feed is rate-limited (429 with `Retry-After` observed)
+and its "this week" window appeared not to refresh exactly at each date change over a
+weekend — immaterial for an 08:00 weekday cron run, but worth knowing if this is ever
+polled more often. "Today" is the **Bangkok-local** date (`bangkok_now`), matching every
+other "today" concept in this codebase, even though the feed itself reports event times
+in US Eastern. `news_calendar_note` always states the no-actual-value scope explicitly,
+whether or not any event was found for today. `format_daily_outlook_message` renders
+today's events directly from the request data (not from the AI's narrative text), so the
+schedule always shows accurately regardless of what the model chose to mention. A
+calendar failure is caught in `_fetch_news_calendar` and never aborts the rest of the
+analysis, same as the FRED and OpenAI paths.
+
+A real forecast-*and*-actual-capable provider (paid) and hardcoding the publicly-known
+FOMC meeting schedule specifically are both still out of scope for this increment.
 
 Gated by `AI_ANALYSIS_ENABLED` (default `false`) and requires `OPENAI_API_KEY`; either
 missing causes a clean skip (`ai.analysis.skipped`), not a crash — this pipeline can
@@ -198,7 +221,8 @@ disabled deployment-wide); run the shell scripts manually when needed.
 
 All shell scripts run as the `app` user (not root) and manually copy only the needed
 `TELEGRAM_*`/`TRADING_*`/`PRICE_SOURCE` vars (plus `OPENAI_*`/`AI_ANALYSIS_ENABLED`/
-`AI_PRICE_SOURCE`/`AI_TRADING_SYMBOL`/`TWELVEDATA_API_KEY`/`FRED_API_KEY` for
+`AI_PRICE_SOURCE`/`AI_TRADING_SYMBOL`/`TWELVEDATA_API_KEY`/`FRED_API_KEY`/
+`AI_NEWS_CALENDAR_ENABLED` for
 `run_ai_daily_outlook_job.sh`) out of `/proc/1/environ` — Debian cron starts jobs with a
 minimal environment, so this is how the container's `env_file` vars reach the job.
 `run_cron_job.sh` accepts a positional timeframe argument

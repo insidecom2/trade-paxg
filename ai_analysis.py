@@ -27,8 +27,9 @@ from ai_prompts import AI_SYSTEM_PROMPT, DAILY_OUTLOOK_INSTRUCTION
 from analyzer import MarketAnalyzer
 from exchange_manager import create_market_data_manager
 from fred_client import FredClient
-from liquidity_sweep import ASIAN_SESSION_HOURS_UTC, bangkok_now, session_high_low
+from liquidity_sweep import ASIAN_SESSION_HOURS_UTC, BANGKOK_TZ, bangkok_now, session_high_low
 from models import Candle
+from news_calendar_client import NewsCalendarClient
 from telegram_notifier import TelegramNotifier
 from trading_state import TradingStateStore
 
@@ -60,6 +61,13 @@ ANALYSIS_TYPE = "DAILY_OUTLOOK"
 
 def _analysis_enabled() -> bool:
     return os.getenv("AI_ANALYSIS_ENABLED", "false").strip().lower() == "true"
+
+
+def _news_calendar_enabled() -> bool:
+    # No API key needed for this source, so it defaults on; kept behind its
+    # own flag anyway so it can be switched off without a redeploy if the
+    # feed misbehaves (rate limiting, schema change, etc.).
+    return os.getenv("AI_NEWS_CALENDAR_ENABLED", "true").strip().lower() == "true"
 
 
 def _resolve_price_source() -> Optional[str]:
@@ -139,12 +147,44 @@ async def _fetch_macro_data(fred_client: Optional[FredClient]) -> tuple[list, st
     return points, note
 
 
+async def _fetch_news_calendar(
+    news_calendar_client: Optional[NewsCalendarClient], reference_time: datetime
+) -> tuple[list, str]:
+    if news_calendar_client is None:
+        return [], "No forward-looking news calendar is supplied for this analysis type."
+    try:
+        today_bangkok = bangkok_now(reference_time).date()
+        events = await asyncio.to_thread(
+            news_calendar_client.fetch_todays_usd_high_impact_events, today_bangkok
+        )
+    except Exception as exc:  # calendar lookup is best-effort, never fatal
+        logger.warning("News calendar lookup failed, continuing without it: %s", exc)
+        return [], "News calendar lookup failed; treat today's event list as unavailable."
+
+    if not events:
+        note = (
+            "No scheduled USD high-impact ('red folder') event was found for "
+            "today in the calendar source. This source has NO actual/reported "
+            "value field at all — only forecast, previous, and scheduled time."
+        )
+    else:
+        note = (
+            "These are today's scheduled USD high-impact ('red folder') "
+            "events with forecast/previous and scheduled time, from a "
+            "forward-looking calendar. This source has NO actual/reported "
+            "value — never claim to know the outcome of an event whose "
+            "scheduled time is still ahead of requested_at."
+        )
+    return events, note
+
+
 async def build_daily_outlook_context(
     symbol: str,
     market_data,
     analyzer: MarketAnalyzer,
     reference_time: Optional[datetime] = None,
     fred_client: Optional[FredClient] = None,
+    news_calendar_client: Optional[NewsCalendarClient] = None,
 ) -> Optional[GoldAIAnalysisRequest]:
     reference_time = reference_time or datetime.now(timezone.utc)
 
@@ -173,6 +213,7 @@ async def build_daily_outlook_context(
     demand_zones = [z for z in supply_demand if z.type == "DEMAND"]
 
     macro_data, macro_note = await _fetch_macro_data(fred_client)
+    news_events, news_note = await _fetch_news_calendar(news_calendar_client, reference_time)
 
     return GoldAIAnalysisRequest(
         analysis_type=ANALYSIS_TYPE,
@@ -190,10 +231,16 @@ async def build_daily_outlook_context(
         demand_zones=_format_zones(demand_zones),
         released_macro_data=macro_data,
         macro_data_note=macro_note,
+        todays_usd_high_impact_events=news_events,
+        news_calendar_note=news_note,
     )
 
 
-def format_daily_outlook_message(symbol: str, response: DailyOutlookResponse) -> str:
+def format_daily_outlook_message(
+    symbol: str,
+    response: DailyOutlookResponse,
+    todays_events: Optional[List] = None,
+) -> str:
     lines = [
         "GOLD AI ANALYSIS — ภาพรวมประจำวัน",
         "",
@@ -208,6 +255,24 @@ def format_daily_outlook_message(symbol: str, response: DailyOutlookResponse) ->
         lines.append(f"แนวต้าน: {', '.join(f'{v:.2f}' for v in response.resistance_zones)}")
     if response.liquidity_targets:
         lines.append(f"เป้าหมาย Liquidity: {', '.join(response.liquidity_targets)}")
+
+    # Rendered directly from the calendar source, not the AI response, so
+    # today's schedule is always shown accurately regardless of whether the
+    # model chose to mention it in its narrative fields.
+    if todays_events:
+        lines.append("")
+        lines.append("ข่าววันนี้ (USD กล่องแดง):")
+        for event in todays_events:
+            local_time = (
+                datetime.fromisoformat(event.scheduled_time)
+                .astimezone(BANGKOK_TZ)
+                .strftime("%H:%M")
+            )
+            detail = f"{local_time} {event.title}"
+            if event.forecast:
+                detail += f" (คาดการณ์ {event.forecast}, ครั้งก่อน {event.previous or '-'})"
+            lines.append(f"- {detail}")
+
     lines += [
         "",
         f"สถานการณ์ขาขึ้น: {response.bullish_scenario}",
@@ -249,8 +314,9 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
         market_data = create_market_data_manager(_resolve_price_source())
         analyzer = MarketAnalyzer()
         fred_client = FredClient.from_env()
+        news_calendar_client = NewsCalendarClient() if _news_calendar_enabled() else None
         request = await build_daily_outlook_context(
-            symbol, market_data, analyzer, reference_time, fred_client
+            symbol, market_data, analyzer, reference_time, fred_client, news_calendar_client
         )
         if request is None:
             logger.warning("ai.analysis.skipped reason=missing_market_data analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
@@ -274,7 +340,7 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
             })
             return True
 
-        message = format_daily_outlook_message(symbol, response)
+        message = format_daily_outlook_message(symbol, response, request.todays_usd_high_impact_events)
         notifier = TelegramNotifier.from_env()
         sent = False
         if notifier is not None:

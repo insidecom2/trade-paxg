@@ -38,6 +38,13 @@ class MacroDataPoint(BaseModel):
     value: float
 
 
+class EconomicEvent(BaseModel):
+    title: str
+    scheduled_time: str  # ISO 8601, UTC
+    forecast: str  # may be "" — the calendar source doesn't always have one
+    previous: str  # may be ""
+
+
 class MarketSnapshot(BaseModel):
     trend: Optional[str] = None
     ema_fast: Optional[float] = None
@@ -76,4 +83,14 @@ class GoldAIAnalysisRequest(BaseModel):
     released_macro_data: List[MacroDataPoint] = Field(default_factory=list)
     macro_data_note: str = (
         "No economic news data is supplied for this analysis type."
+    )
+
+    # Today's scheduled USD high-impact ("red folder") events, from a
+    # forward-looking calendar feed. This source has NO actual/reported
+    # value field at all (verified against the live feed) — forecast/
+    # previous and scheduled time only. news_calendar_note always states
+    # that, whether or not any event was found for today.
+    todays_usd_high_impact_events: List[EconomicEvent] = Field(default_factory=list)
+    news_calendar_note: str = (
+        "No forward-looking news calendar is supplied for this analysis type."
     )

@@ -6,10 +6,17 @@ from unittest.mock import AsyncMock, patch
 
 import ai_analysis
 from ai_client import AIAnalysisClient
-from ai_models import DailyOutlookResponse, GoldAIAnalysisRequest, MacroDataPoint, MarketSnapshot
+from ai_models import (
+    DailyOutlookResponse,
+    EconomicEvent,
+    GoldAIAnalysisRequest,
+    MacroDataPoint,
+    MarketSnapshot,
+)
 from ai_prompts import AI_SYSTEM_PROMPT
 from fred_client import FredClient
 from models import Candle
+from news_calendar_client import NewsCalendarClient
 from trading_state import TradingStateStore
 
 
@@ -117,6 +124,65 @@ class BuildDailyOutlookContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.released_macro_data, [])
         self.assertIn("unavailable", request.macro_data_note.lower())
 
+    async def test_news_calendar_events_included_when_client_provided(self):
+        from analyzer import MarketAnalyzer
+
+        market_data = FakeMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1h": make_candles(250, step_ms=3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        fake_calendar = NewsCalendarClient()
+        event = EconomicEvent(
+            title="Core PCE Price Index m/m",
+            scheduled_time="2026-08-30T12:30:00+00:00",
+            forecast="0.2%",
+            previous="0.1%",
+        )
+        with patch.object(
+            fake_calendar, "fetch_todays_usd_high_impact_events", return_value=[event]
+        ):
+            request = await ai_analysis.build_daily_outlook_context(
+                "PAXG/USDT", market_data, MarketAnalyzer(), news_calendar_client=fake_calendar,
+            )
+        self.assertEqual(request.todays_usd_high_impact_events, [event])
+        self.assertIn("no actual", request.news_calendar_note.lower())
+
+    async def test_news_calendar_empty_when_no_events_found(self):
+        from analyzer import MarketAnalyzer
+
+        market_data = FakeMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1h": make_candles(250, step_ms=3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        fake_calendar = NewsCalendarClient()
+        with patch.object(fake_calendar, "fetch_todays_usd_high_impact_events", return_value=[]):
+            request = await ai_analysis.build_daily_outlook_context(
+                "PAXG/USDT", market_data, MarketAnalyzer(), news_calendar_client=fake_calendar,
+            )
+        self.assertEqual(request.todays_usd_high_impact_events, [])
+        self.assertIn("no scheduled", request.news_calendar_note.lower())
+
+    async def test_news_calendar_failure_does_not_break_context_building(self):
+        from analyzer import MarketAnalyzer
+
+        market_data = FakeMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1h": make_candles(250, step_ms=3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        fake_calendar = NewsCalendarClient()
+        with patch.object(
+            fake_calendar, "fetch_todays_usd_high_impact_events", side_effect=RuntimeError("boom")
+        ):
+            request = await ai_analysis.build_daily_outlook_context(
+                "PAXG/USDT", market_data, MarketAnalyzer(), news_calendar_client=fake_calendar,
+            )
+        self.assertIsNotNone(request)
+        self.assertEqual(request.todays_usd_high_impact_events, [])
+        self.assertIn("unavailable", request.news_calendar_note.lower())
+
 
 class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -128,7 +194,17 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
         # explicitly via patch.dict.
         env_clear_patch = patch.dict(
             "os.environ",
-            {"AI_TRADING_SYMBOL": "", "AI_PRICE_SOURCE": "", "FRED_API_KEY": ""},
+            {
+                "AI_TRADING_SYMBOL": "",
+                "AI_PRICE_SOURCE": "",
+                "FRED_API_KEY": "",
+                # NewsCalendarClient needs no API key, so it's constructed
+                # unconditionally unless this flag is off — force it off
+                # here so no unit test ever makes a real network call to
+                # the live calendar feed. Tests exercising the calendar
+                # path enable it explicitly via patch.dict.
+                "AI_NEWS_CALENDAR_ENABLED": "false",
+            },
         )
         env_clear_patch.start()
         self.addCleanup(env_clear_patch.stop)
@@ -274,6 +350,24 @@ class FormatDailyOutlookMessageTests(unittest.TestCase):
         message = ai_analysis.format_daily_outlook_message("PAXG/USDT", response)
         self.assertIn("WAIT", message)
         self.assertIn("RANGE", message)
+
+    def test_todays_events_rendered_from_request_not_ai_response(self):
+        response = sample_response()
+        event = EconomicEvent(
+            title="Core PCE Price Index m/m",
+            scheduled_time="2026-08-30T12:30:00+00:00",  # 19:30 Bangkok
+            forecast="0.2%",
+            previous="0.1%",
+        )
+        message = ai_analysis.format_daily_outlook_message("PAXG/USDT", response, [event])
+        self.assertIn("Core PCE Price Index m/m", message)
+        self.assertIn("19:30", message)
+        self.assertIn("0.2%", message)
+
+    def test_no_events_section_when_list_empty(self):
+        response = sample_response()
+        message = ai_analysis.format_daily_outlook_message("PAXG/USDT", response, [])
+        self.assertNotIn("ข่าววันนี้", message)
 
 
 class SystemPromptInjectionTests(unittest.IsolatedAsyncioTestCase):
