@@ -59,14 +59,15 @@ state:**
    separate lock file.
 
 **`exchange_manager.py`** abstracts market data behind `create_market_data_manager()`,
-selected via `PRICE_SOURCE` env var:
+selected via `PRICE_SOURCE` env var (or an explicit `source` argument, used by the AI
+pipeline's `AI_PRICE_SOURCE` override — see below):
 - `binance` (default): `BinanceManager` uses `ccxt`, automatically failing over between
   `api.binance.com` and the `data-api.binance.vision` mirror (Binance is geo-blocked in
   some regions).
-- `mysql`: `MySQLManager` reads an existing hourly XAUUSD price table
-  (`f_symbol='xauusd'`, `f_price`) and aggregates hourly rows into 1h/4h/1d candles with
-  zero volume. Table/column names are validated against a safe-identifier regex before
-  being interpolated into SQL.
+- `twelvedata`: `TwelveDataManager` reads XAU/USD spot candles from the Twelve Data REST
+  API (`TWELVEDATA_API_KEY` required), volume is always `0.0` (Twelve Data has none for
+  spot gold). Requests pin `timezone=UTC` explicitly — the API's default response
+  timezone is not UTC, and Bangkok/session-hour math downstream depends on that.
 
 **`trading_state.py`** (`TradingStateStore`) is a `flock`-guarded JSON key/value store
 (`trading_state.json`). Read locks are shared, writes are exclusive with atomic
@@ -184,10 +185,11 @@ All cron entries are currently commented out in `trade-paxg.cron` (notifications
 disabled deployment-wide); run the shell scripts manually when needed.
 
 All shell scripts run as the `app` user (not root) and manually copy only the needed
-`TELEGRAM_*`/`TRADING_*`/`MYSQL_*`/`PRICE_SOURCE` vars (plus `OPENAI_*`/
-`AI_ANALYSIS_ENABLED` for `run_ai_daily_outlook_job.sh`) out of `/proc/1/environ` —
-Debian cron starts jobs with a minimal environment, so this is how the container's
-`env_file` vars reach the job. `run_cron_job.sh` accepts a positional timeframe argument
+`TELEGRAM_*`/`TRADING_*`/`PRICE_SOURCE` vars (plus `OPENAI_*`/`AI_ANALYSIS_ENABLED`/
+`AI_PRICE_SOURCE`/`AI_TRADING_SYMBOL`/`TWELVEDATA_API_KEY` for
+`run_ai_daily_outlook_job.sh`) out of `/proc/1/environ` — Debian cron starts jobs with a
+minimal environment, so this is how the container's `env_file` vars reach the job.
+`run_cron_job.sh` accepts a positional timeframe argument
 that overrides `TRADING_TIMEFRAME`.
 
 `docker-compose.yml` currently only enables the cron container; the API service block is
