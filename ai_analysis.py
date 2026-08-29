@@ -26,6 +26,7 @@ from ai_models import DailyOutlookResponse, GoldAIAnalysisRequest, MarketSnapsho
 from ai_prompts import AI_SYSTEM_PROMPT, DAILY_OUTLOOK_INSTRUCTION
 from analyzer import MarketAnalyzer
 from exchange_manager import create_market_data_manager
+from fred_client import FredClient
 from liquidity_sweep import ASIAN_SESSION_HOURS_UTC, bangkok_now, session_high_low
 from models import Candle
 from telegram_notifier import TelegramNotifier
@@ -116,11 +117,34 @@ def _format_zones(zones) -> List[str]:
     return [f"{zone.type} {zone.bottom:.2f}-{zone.top:.2f}" for zone in zones]
 
 
+async def _fetch_macro_data(fred_client: Optional[FredClient]) -> tuple[list, str]:
+    if fred_client is None:
+        return [], (
+            "No economic data source is configured for this analysis "
+            "(FRED_API_KEY not set)."
+        )
+    try:
+        points = await fred_client.fetch_latest_released()
+    except Exception as exc:  # macro data is best-effort, never fatal
+        logger.warning("FRED lookup failed, continuing without macro data: %s", exc)
+        return [], "Economic data lookup failed; treat macro context as unavailable."
+
+    note = (
+        "These are the most recently RELEASED actual values for a fixed set "
+        "of US macro indicators (source: FRED). There is no forecast/"
+        "consensus figure and no forward-looking release calendar in this "
+        "data — do not imply an upcoming release date or a market-expected "
+        "value beyond what is listed here."
+    )
+    return points, note
+
+
 async def build_daily_outlook_context(
     symbol: str,
     market_data,
     analyzer: MarketAnalyzer,
     reference_time: Optional[datetime] = None,
+    fred_client: Optional[FredClient] = None,
 ) -> Optional[GoldAIAnalysisRequest]:
     reference_time = reference_time or datetime.now(timezone.utc)
 
@@ -148,6 +172,8 @@ async def build_daily_outlook_context(
     supply_zones = [z for z in supply_demand if z.type == "SUPPLY"]
     demand_zones = [z for z in supply_demand if z.type == "DEMAND"]
 
+    macro_data, macro_note = await _fetch_macro_data(fred_client)
+
     return GoldAIAnalysisRequest(
         analysis_type=ANALYSIS_TYPE,
         requested_at=reference_time.isoformat(),
@@ -162,7 +188,8 @@ async def build_daily_outlook_context(
         asian_low=asian_low,
         supply_zones=_format_zones(supply_zones),
         demand_zones=_format_zones(demand_zones),
-        news_available=False,
+        released_macro_data=macro_data,
+        macro_data_note=macro_note,
     )
 
 
@@ -221,7 +248,10 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
     try:
         market_data = create_market_data_manager(_resolve_price_source())
         analyzer = MarketAnalyzer()
-        request = await build_daily_outlook_context(symbol, market_data, analyzer, reference_time)
+        fred_client = FredClient.from_env()
+        request = await build_daily_outlook_context(
+            symbol, market_data, analyzer, reference_time, fred_client
+        )
         if request is None:
             logger.warning("ai.analysis.skipped reason=missing_market_data analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
             return True

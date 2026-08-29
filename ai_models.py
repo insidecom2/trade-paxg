@@ -32,6 +32,12 @@ class DailyOutlookResponse(BaseModel):
     reasoning: str
 
 
+class MacroDataPoint(BaseModel):
+    indicator: str  # e.g. "CPI (headline)", "Non-farm Payrolls"
+    period: str     # e.g. "2026-07-01" — the data period, not a release date
+    value: float
+
+
 class MarketSnapshot(BaseModel):
     trend: Optional[str] = None
     ema_fast: Optional[float] = None
@@ -61,5 +67,13 @@ class GoldAIAnalysisRequest(BaseModel):
     supply_zones: List[str] = Field(default_factory=list)
     demand_zones: List[str] = Field(default_factory=list)
 
-    news_available: bool = False
-    news_note: str = "No economic news data is supplied for this analysis type."
+    # FRED (Federal Reserve) gives the most recently *released* actual/
+    # previous values for a fixed set of US macro indicators — it has no
+    # forecast/consensus figures and no forward-looking release calendar.
+    # macro_data_note always states that scope explicitly, whether or not
+    # released_macro_data is empty, so the model never assumes it also has
+    # upcoming-event or forecast context it wasn't given.
+    released_macro_data: List[MacroDataPoint] = Field(default_factory=list)
+    macro_data_note: str = (
+        "No economic news data is supplied for this analysis type."
+    )

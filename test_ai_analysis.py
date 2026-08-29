@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, patch
 
 import ai_analysis
 from ai_client import AIAnalysisClient
-from ai_models import DailyOutlookResponse, GoldAIAnalysisRequest, MarketSnapshot
+from ai_models import DailyOutlookResponse, GoldAIAnalysisRequest, MacroDataPoint, MarketSnapshot
 from ai_prompts import AI_SYSTEM_PROMPT
+from fred_client import FredClient
 from models import Candle
 from trading_state import TradingStateStore
 
@@ -68,7 +69,10 @@ class BuildDailyOutlookContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.timezone, "Asia/Bangkok")
         self.assertIsNotNone(request.h4.atr)
         self.assertIsNotNone(request.previous_day_high)
-        self.assertFalse(request.news_available)
+        # No fred_client passed -> macro data must be explicitly empty with
+        # a note, never silently omitted.
+        self.assertEqual(request.released_macro_data, [])
+        self.assertIn("FRED_API_KEY", request.macro_data_note)
 
     async def test_returns_none_without_enough_candles(self):
         from analyzer import MarketAnalyzer
@@ -78,6 +82,40 @@ class BuildDailyOutlookContextTests(unittest.IsolatedAsyncioTestCase):
             "PAXG/USDT", market_data, MarketAnalyzer(),
         )
         self.assertIsNone(request)
+
+    async def test_macro_data_included_when_fred_client_provided(self):
+        from analyzer import MarketAnalyzer
+
+        market_data = FakeMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1h": make_candles(250, step_ms=3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        fake_fred = FredClient(api_key="key")
+        point = MacroDataPoint(indicator="CPI (headline)", period="2026-07-01", value=332.8)
+        with patch.object(fake_fred, "fetch_latest_released", AsyncMock(return_value=[point])):
+            request = await ai_analysis.build_daily_outlook_context(
+                "PAXG/USDT", market_data, MarketAnalyzer(), fred_client=fake_fred,
+            )
+        self.assertEqual(request.released_macro_data, [point])
+        self.assertIn("no forecast", request.macro_data_note.lower())
+
+    async def test_macro_data_failure_does_not_break_context_building(self):
+        from analyzer import MarketAnalyzer
+
+        market_data = FakeMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1h": make_candles(250, step_ms=3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        fake_fred = FredClient(api_key="key")
+        with patch.object(fake_fred, "fetch_latest_released", AsyncMock(side_effect=RuntimeError("boom"))):
+            request = await ai_analysis.build_daily_outlook_context(
+                "PAXG/USDT", market_data, MarketAnalyzer(), fred_client=fake_fred,
+            )
+        self.assertIsNotNone(request)
+        self.assertEqual(request.released_macro_data, [])
+        self.assertIn("unavailable", request.macro_data_note.lower())
 
 
 class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
@@ -90,10 +128,18 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
         # explicitly via patch.dict.
         env_clear_patch = patch.dict(
             "os.environ",
-            {"AI_TRADING_SYMBOL": "", "AI_PRICE_SOURCE": ""},
+            {"AI_TRADING_SYMBOL": "", "AI_PRICE_SOURCE": "", "FRED_API_KEY": ""},
         )
         env_clear_patch.start()
         self.addCleanup(env_clear_patch.stop)
+
+        # Also stub FredClient.from_env so a developer's real FRED_API_KEY
+        # (once cleared above, this would just return None anyway, but a
+        # real key sitting in os.environ before this patch applies must
+        # never cause a real network call from a unit test) never fires.
+        fred_patch = patch("ai_analysis.FredClient.from_env", return_value=None)
+        fred_patch.start()
+        self.addCleanup(fred_patch.stop)
 
         self._tmpdir = TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
@@ -245,7 +291,7 @@ class SystemPromptInjectionTests(unittest.IsolatedAsyncioTestCase):
         request = await ai_analysis.build_daily_outlook_context(
             "PAXG/USDT", market_data, MarketAnalyzer(),
         )
-        request.news_note = malicious_note
+        request.macro_data_note = malicious_note
         self.assertNotIn(malicious_note, AI_SYSTEM_PROMPT)
         self.assertIn("untrusted", AI_SYSTEM_PROMPT.lower())
 

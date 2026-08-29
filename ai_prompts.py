@@ -49,7 +49,11 @@ Before scheduled news:
 do not predict results.
 
 After released news:
-compare Actual vs Forecast AND actual market reaction.
+compare Actual vs Forecast AND actual market reaction, but ONLY when a
+forecast/consensus value is actually supplied. If macro data is supplied
+without a forecast field (it will say so explicitly), compare Actual only
+against the Previous value — never invent or imply a forecast figure that
+was not given to you.
 
 Do not assume textbook market reaction when price action contradicts it.
 
@@ -82,10 +86,14 @@ DAILY_OUTLOOK_INSTRUCTION = """Produce today's DAILY_OUTLOOK: a master roadmap f
 trade recommendation. Do NOT force a preferred_strategy other than WAIT if
 the technical picture does not clearly support one.
 
-Base daily_bias and preferred_strategy only on the supplied 4H trend, 1H
-structure, support/resistance, and previous-day high/low. No economic news
-data is supplied for this analysis type — if news context is unavailable,
-say so explicitly rather than omitting the topic silently.
+Base daily_bias and preferred_strategy primarily on the supplied 4H trend, 1H
+structure, support/resistance, and previous-day high/low. Macro data (if
+supplied) is the most recently RELEASED actual values only — it has no
+forecast figures and no forward-looking release calendar, as macro_data_note
+will state. Use it as background context (e.g. inflation/employment/rate
+trend), never as a same-day news-risk signal, and never imply you know what
+is scheduled to release today. If macro context is unavailable, say so
+explicitly rather than omitting the topic silently.
 
 Write bullish_scenario, bearish_scenario, invalidation, avoid_chasing_notes,
 and reasoning in Thai (ภาษาไทย). Keep daily_bias and preferred_strategy as

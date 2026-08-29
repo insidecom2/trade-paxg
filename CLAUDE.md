@@ -144,19 +144,31 @@ Telegram, no `trading_state.json` writes) and reports a funnel of where setups g
 invalidated plus win/loss/R-multiple stats for any completed entries.
 
 **AI Gold Trading Analyst** (`ai_analysis.py`) is a fourth, independent pipeline —
-**notification-only, no news integration in this increment**: once a day at 08:00
-Bangkok it builds a `DAILY_OUTLOOK` (bias, confidence, preferred strategy, S/R zones,
-bullish/bearish scenarios, invalidation) from indicators `analyzer.py` already computes
-(EMA trend, ATR, Bollinger, volume ratio, key levels, supply/demand zones) plus
-previous-day and Asian-session high/low reused from `liquidity_sweep.py`
-(`session_high_low`, `bangkok_now`, `ASIAN_SESSION_HOURS_UTC`), and sends the result to
-OpenAI's Responses API (`ai_client.py`, `client.responses.parse` with a pydantic
-`text_format` — Structured Outputs, so the model's output is schema-validated by
-construction, not parsed as free text). The prompt is centralized in `ai_prompts.py`
+**notification-only**: once a day at 08:00 Bangkok it builds a `DAILY_OUTLOOK` (bias,
+confidence, preferred strategy, S/R zones, bullish/bearish scenarios, invalidation) from
+indicators `analyzer.py` already computes (EMA trend, ATR, Bollinger, volume ratio, key
+levels, supply/demand zones) plus previous-day and Asian-session high/low reused from
+`liquidity_sweep.py` (`session_high_low`, `bangkok_now`, `ASIAN_SESSION_HOURS_UTC`), and
+sends the result to OpenAI's Responses API (`ai_client.py`, `client.responses.parse` with
+a pydantic `text_format` — Structured Outputs, so the model's output is schema-validated
+by construction, not parsed as free text). The prompt is centralized in `ai_prompts.py`
 (`AI_SYSTEM_PROMPT`); it explicitly instructs the model to treat all supplied market/news
 data as untrusted content, never as instructions, and to never invent missing
-prices/indicators/news. Economic news is out of scope for this increment — the request
-always marks `news_available=False` rather than silently omitting the topic.
+prices/indicators/news.
+
+**Macro data** (`fred_client.py`, `FredClient`) optionally adds the most recently
+*released* actual value for six US indicators (CPI, Core CPI, PCE, Non-farm Payrolls,
+Unemployment Rate, Fed Funds Rate) from the FRED (Federal Reserve) API, gated by
+`FRED_API_KEY` — unset simply omits macro data, the pipeline still runs. This is
+deliberately narrow: FRED has no forecast/consensus figures and its `releases/dates`
+endpoint only reports dates already in the past (verified against the live API, not
+assumed) — there is no forward-looking economic calendar here. `macro_data_note` in the
+request always states that scope explicitly, whether or not any data point was fetched,
+so the model never assumes it also knows what's scheduled to release today or what the
+market expected. A FRED failure is caught in `_fetch_macro_data` and never aborts the
+rest of the analysis — same fault-isolation principle as everything else in this module.
+A same-day-aware news calendar (e.g. hardcoding the publicly-known FOMC meeting schedule)
+and a real forecast-capable provider are both out of scope for this increment.
 
 Gated by `AI_ANALYSIS_ENABLED` (default `false`) and requires `OPENAI_API_KEY`; either
 missing causes a clean skip (`ai.analysis.skipped`), not a crash — this pipeline can
@@ -186,7 +198,7 @@ disabled deployment-wide); run the shell scripts manually when needed.
 
 All shell scripts run as the `app` user (not root) and manually copy only the needed
 `TELEGRAM_*`/`TRADING_*`/`PRICE_SOURCE` vars (plus `OPENAI_*`/`AI_ANALYSIS_ENABLED`/
-`AI_PRICE_SOURCE`/`AI_TRADING_SYMBOL`/`TWELVEDATA_API_KEY` for
+`AI_PRICE_SOURCE`/`AI_TRADING_SYMBOL`/`TWELVEDATA_API_KEY`/`FRED_API_KEY` for
 `run_ai_daily_outlook_job.sh`) out of `/proc/1/environ` — Debian cron starts jobs with a
 minimal environment, so this is how the container's `env_file` vars reach the job.
 `run_cron_job.sh` accepts a positional timeframe argument
