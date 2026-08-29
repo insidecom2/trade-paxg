@@ -85,4 +85,8 @@ the technical picture does not clearly support one.
 Base daily_bias and preferred_strategy only on the supplied 4H trend, 1H
 structure, support/resistance, and previous-day high/low. No economic news
 data is supplied for this analysis type — if news context is unavailable,
-say so explicitly rather than omitting the topic silently."""
+say so explicitly rather than omitting the topic silently.
+
+Write bullish_scenario, bearish_scenario, invalidation, avoid_chasing_notes,
+and reasoning in Thai (ภาษาไทย). Keep daily_bias and preferred_strategy as
+their exact English enum values — do not translate those two fields."""

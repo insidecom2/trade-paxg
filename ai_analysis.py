@@ -61,6 +61,20 @@ def _analysis_enabled() -> bool:
     return os.getenv("AI_ANALYSIS_ENABLED", "false").strip().lower() == "true"
 
 
+def _resolve_price_source() -> Optional[str]:
+    """AI_PRICE_SOURCE lets this pipeline use a different market data source
+    (e.g. twelvedata/XAU-USD) than the strategy/liquidity-sweep pipelines
+    (PAXG/USDT via binance) without changing their shared PRICE_SOURCE."""
+    return os.getenv("AI_PRICE_SOURCE") or None
+
+
+def _resolve_symbol(cli_symbol: str) -> str:
+    """AI_TRADING_SYMBOL overrides the CLI/TRADING_SYMBOL default so the
+    symbol can match AI_PRICE_SOURCE (e.g. XAU/USD for twelvedata) without
+    touching the strategy's TRADING_SYMBOL."""
+    return os.getenv("AI_TRADING_SYMBOL") or cli_symbol
+
+
 def _closed_candles(candles: List[Candle]) -> List[Candle]:
     return candles[:-1] if len(candles) > 1 else candles
 
@@ -154,32 +168,33 @@ async def build_daily_outlook_context(
 
 def format_daily_outlook_message(symbol: str, response: DailyOutlookResponse) -> str:
     lines = [
-        f"GOLD AI ANALYSIS — DAILY OUTLOOK",
+        "GOLD AI ANALYSIS — ภาพรวมประจำวัน",
         "",
-        f"Symbol: {symbol}",
-        f"Bias: {response.daily_bias}",
-        f"Confidence: {response.confidence}%",
-        f"Preferred strategy: {response.preferred_strategy}",
+        f"สัญลักษณ์: {symbol}",
+        f"ทิศทาง: {response.daily_bias}",
+        f"ความมั่นใจ: {response.confidence}%",
+        f"กลยุทธ์ที่แนะนำ: {response.preferred_strategy}",
     ]
     if response.support_zones:
-        lines.append(f"Support: {', '.join(f'{v:.2f}' for v in response.support_zones)}")
+        lines.append(f"แนวรับ: {', '.join(f'{v:.2f}' for v in response.support_zones)}")
     if response.resistance_zones:
-        lines.append(f"Resistance: {', '.join(f'{v:.2f}' for v in response.resistance_zones)}")
+        lines.append(f"แนวต้าน: {', '.join(f'{v:.2f}' for v in response.resistance_zones)}")
     if response.liquidity_targets:
-        lines.append(f"Liquidity targets: {', '.join(response.liquidity_targets)}")
+        lines.append(f"เป้าหมาย Liquidity: {', '.join(response.liquidity_targets)}")
     lines += [
         "",
-        f"Bullish scenario: {response.bullish_scenario}",
-        f"Bearish scenario: {response.bearish_scenario}",
-        f"Invalidation: {response.invalidation}",
+        f"สถานการณ์ขาขึ้น: {response.bullish_scenario}",
+        f"สถานการณ์ขาลง: {response.bearish_scenario}",
+        f"จุดยกเลิกมุมมอง: {response.invalidation}",
     ]
     if response.avoid_chasing_notes:
-        lines.append(f"Avoid: {response.avoid_chasing_notes}")
-    lines += ["", f"Reasoning: {response.reasoning}"]
+        lines.append(f"ข้อควรระวัง: {response.avoid_chasing_notes}")
+    lines += ["", f"เหตุผล: {response.reasoning}"]
     return "\n".join(lines)
 
 
 async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] = None) -> bool:
+    symbol = _resolve_symbol(symbol)
     if not _analysis_enabled():
         logger.info("ai.analysis.skipped reason=disabled analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
         return True
@@ -204,7 +219,7 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
     logger.info("ai.analysis.started analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
     market_data = None
     try:
-        market_data = create_market_data_manager()
+        market_data = create_market_data_manager(_resolve_price_source())
         analyzer = MarketAnalyzer()
         request = await build_daily_outlook_context(symbol, market_data, analyzer, reference_time)
         if request is None:

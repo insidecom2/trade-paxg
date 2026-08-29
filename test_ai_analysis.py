@@ -82,6 +82,19 @@ class BuildDailyOutlookContextTests(unittest.IsolatedAsyncioTestCase):
 
 class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        # ai_analysis.py runs load_dotenv() at import time, so a developer's
+        # local .env (e.g. AI_TRADING_SYMBOL=XAU/USD for real runs) would
+        # otherwise leak into these tests and change which state key gets
+        # written/read. Clear both so every test here is hermetic regardless
+        # of local .env contents; tests that want an override set it
+        # explicitly via patch.dict.
+        env_clear_patch = patch.dict(
+            "os.environ",
+            {"AI_TRADING_SYMBOL": "", "AI_PRICE_SOURCE": ""},
+        )
+        env_clear_patch.start()
+        self.addCleanup(env_clear_patch.stop)
+
         self._tmpdir = TemporaryDirectory()
         self.addCleanup(self._tmpdir.cleanup)
         self._state_path = Path(self._tmpdir.name) / "trading_state.json"
@@ -97,7 +110,7 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
             "1d": make_candles(3, step_ms=86_400_000),
         })
         self._create_market_data_patch = patch(
-            "ai_analysis.create_market_data_manager", lambda: self._market_data
+            "ai_analysis.create_market_data_manager", lambda source=None: self._market_data
         )
         self._create_market_data_patch.start()
         self.addCleanup(self._create_market_data_patch.stop)
@@ -164,6 +177,49 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
                 await ai_analysis.run_daily_outlook("PAXG/USDT", now=now)
         self.assertEqual(analyze.call_count, 1)
         notifier.send_message.assert_awaited_once()
+
+    async def test_ai_trading_symbol_overrides_cli_symbol_and_state_key(self):
+        fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
+        env = {
+            "AI_ANALYSIS_ENABLED": "true",
+            "OPENAI_API_KEY": "x",
+            "AI_TRADING_SYMBOL": "XAU/USD",
+        }
+        with patch.dict("os.environ", env):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
+                 patch.object(fake_client, "analyze", return_value=sample_response()), \
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
+                await ai_analysis.run_daily_outlook(
+                    "PAXG/USDT", now=datetime(2024, 1, 8, 1, 0, tzinfo=timezone.utc)
+                )
+        # State must be keyed by the resolved symbol (XAU/USD), not the
+        # CLI-supplied default (PAXG/USDT) — otherwise switching sources
+        # would silently share/collide dedup state with the crypto pipeline.
+        store = TradingStateStore(self._state_path)
+        self.assertEqual(store.get("XAU/USD|ai_daily_outlook").get("status"), "sent")
+        self.assertEqual(store.get("PAXG/USDT|ai_daily_outlook"), {})
+
+    async def test_ai_price_source_is_passed_to_market_data_factory(self):
+        fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
+        env = {
+            "AI_ANALYSIS_ENABLED": "true",
+            "OPENAI_API_KEY": "x",
+            "AI_PRICE_SOURCE": "twelvedata",
+        }
+        with patch.dict("os.environ", env):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
+                 patch.object(fake_client, "analyze", return_value=sample_response()), \
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier), \
+                 patch("ai_analysis.create_market_data_manager") as factory:
+                factory.return_value = self._market_data
+                await ai_analysis.run_daily_outlook(
+                    "PAXG/USDT", now=datetime(2024, 1, 8, 1, 0, tzinfo=timezone.utc)
+                )
+        factory.assert_called_once_with("twelvedata")
 
 
 class FormatDailyOutlookMessageTests(unittest.TestCase):
