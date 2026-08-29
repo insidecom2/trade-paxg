@@ -30,18 +30,21 @@ class CronConfigurationTests(unittest.TestCase):
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        self.assertEqual(len(entries), 2)
+        # Active today: DAILY_OUTLOOK, SETUP_DETECTION, SETUP_CONFIRMATION,
+        # FINAL_SESSION_DECISION. Everything else (strategy, exit-profit,
+        # liquidity-sweep, SESSION_PREPARATION) is deliberately disabled.
+        self.assertEqual(len(entries), 4)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
 
-    def test_4h_strategy_job_is_scheduled(self):
+    def test_4h_strategy_job_is_disabled(self):
         entries = scheduled_entries()
 
-        strategy_entries = [entry for entry in entries if "run_cron_job.sh 4h" in entry]
-
-        self.assertEqual(len(strategy_entries), 1, "expected one 4h strategy cron entry")
-        self.assertTrue(strategy_entries[0].startswith("1 0,4,8,12,16,20 * * 1-5"))
+        self.assertFalse(
+            any("run_cron_job.sh 4h" in entry for entry in entries),
+            "4h strategy notifications must not have an active cron entry",
+        )
 
     def test_exit_profit_job_is_disabled(self):
         entries = scheduled_entries()
@@ -51,16 +54,50 @@ class CronConfigurationTests(unittest.TestCase):
             "exit-profit monitor must not have an active cron entry",
         )
 
-    def test_liquidity_sweep_job_is_scheduled_within_bangkok_window(self):
+    def test_liquidity_sweep_job_is_disabled(self):
         entries = scheduled_entries()
-        sweep_entries = [e for e in entries if "run_liquidity_sweep_job.sh" in e]
 
-        self.assertEqual(len(sweep_entries), 1)
-        for entry in sweep_entries:
-            with self.subTest(entry=entry):
-                self.assertIn("/tmp/trade-paxg-liquidity-sweep.lock", entry)
-                self.assertIn("1-5", entry)
-        self.assertTrue(any("0 12-20" in entry for entry in sweep_entries))
+        self.assertFalse(
+            any("run_liquidity_sweep_job.sh" in entry for entry in entries),
+            "liquidity-sweep watch must not have an active cron entry",
+        )
+
+    def test_ai_daily_outlook_job_is_scheduled_at_08_00(self):
+        entries = scheduled_entries()
+        daily_outlook_entries = [e for e in entries if "run_ai_daily_outlook_job.sh" in e]
+
+        self.assertEqual(len(daily_outlook_entries), 1)
+        entry = daily_outlook_entries[0]
+        self.assertTrue(entry.startswith("0 8 * * 1-5"))
+        self.assertIn("/tmp/trade-paxg-ai-daily-outlook.lock", entry)
+
+    def test_ai_session_preparation_job_is_disabled(self):
+        entries = scheduled_entries()
+
+        self.assertFalse(
+            any("session_preparation" in entry for entry in entries),
+            "SESSION_PREPARATION (18:00) is deliberately left disabled",
+        )
+
+    def test_ai_session_stage_jobs_are_scheduled(self):
+        entries = scheduled_entries()
+        expected = {
+            "setup_detection": ("0 19 * * 1-5", "/tmp/trade-paxg-ai-setup-detection.lock"),
+            "setup_confirmation": ("0 20 * * 1-5", "/tmp/trade-paxg-ai-setup-confirmation.lock"),
+            "final_session_decision": (
+                "0 21 * * 1-5", "/tmp/trade-paxg-ai-final-session-decision.lock",
+            ),
+        }
+        for stage, (expected_schedule, expected_lock) in expected.items():
+            with self.subTest(stage=stage):
+                stage_entries = [
+                    e for e in entries
+                    if f"run_ai_session_stage_job.sh {stage}" in e
+                ]
+                self.assertEqual(len(stage_entries), 1, f"expected one {stage} cron entry")
+                entry = stage_entries[0]
+                self.assertTrue(entry.startswith(expected_schedule))
+                self.assertIn(expected_lock, entry)
 
     def test_launcher_forwards_an_explicit_timeframe(self):
         launcher = CRON_LAUNCHER.read_text(encoding="utf-8")
@@ -82,6 +119,21 @@ class CronConfigurationTests(unittest.TestCase):
 
         self.assertIn("liquidity_sweep.py", launcher)
         self.assertIn('--symbol "${TRADING_SYMBOL:-PAXG/USDT}"', launcher)
+
+    def test_ai_daily_outlook_launcher_runs_the_daily_outlook_stage(self):
+        launcher = (ROOT / "run_ai_daily_outlook_job.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ai_analysis.py", launcher)
+        self.assertIn('--symbol "${TRADING_SYMBOL:-PAXG/USDT}"', launcher)
+
+    def test_ai_session_stage_launcher_requires_a_stage_argument(self):
+        launcher = (ROOT / "run_ai_session_stage_job.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ai_analysis.py", launcher)
+        self.assertIn("--stage", launcher)
+        # ${1:?...} fails loudly if no stage was passed, rather than
+        # silently defaulting to the wrong analysis type.
+        self.assertIn('${1:?', launcher)
 
 
 if __name__ == "__main__":
