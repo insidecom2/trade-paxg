@@ -260,10 +260,12 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict("os.environ", {}, clear=False):
             import os
             os.environ.pop("AI_ANALYSIS_ENABLED", None)
-            with patch("ai_analysis.AIAnalysisClient.from_env") as from_env:
+            with self.assertLogs("AIGoldAnalyst", level="INFO") as logs, \
+                 patch("ai_analysis.AIAnalysisClient.from_env") as from_env:
                 result = await ai_analysis.run_daily_outlook("PAXG/USDT")
         self.assertTrue(result)
         from_env.assert_not_called()
+        self.assertIn("AI_ANALYSIS_ENABLED=<unset> enabled=false", "\n".join(logs.output))
 
     async def test_missing_api_key_skips_gracefully(self):
         with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true"}):
