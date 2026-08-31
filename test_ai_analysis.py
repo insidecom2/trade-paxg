@@ -14,7 +14,7 @@ from ai_models import (
     MarketSnapshot,
     SessionAnalysisResponse,
 )
-from ai_prompts import AI_SYSTEM_PROMPT
+from ai_prompts import AI_SYSTEM_PROMPT, SETUP_DETECTION_INSTRUCTION
 from fred_client import FredClient
 from models import Candle
 from news_calendar_client import NewsCalendarClient
@@ -535,6 +535,11 @@ class LoadPreviousStageContextTests(unittest.TestCase):
 
 
 class FormatSessionAnalysisMessageTests(unittest.TestCase):
+    def test_19_00_prompt_allows_a_confirmed_zone_entry(self):
+        self.assertIn("may return BUY_SETUP or SELL_SETUP at 19:00", SETUP_DETECTION_INSTRUCTION)
+        self.assertIn("support/resistance, supply, or demand zone", SETUP_DETECTION_INSTRUCTION)
+        self.assertIn("merely because\nprice touched a level", SETUP_DETECTION_INSTRUCTION)
+
     def test_wait_decision_and_confirmation_are_visible(self):
         response = sample_session_response(
             decision="WAIT",
@@ -558,6 +563,57 @@ class FormatSessionAnalysisMessageTests(unittest.TestCase):
         self.assertIn("2010.00", message)
         self.assertIn("Stop Loss: 2018.00", message)
         self.assertIn("TP1: 1998.00", message)
+
+    def test_confirmation_stages_show_change_status_and_price_distance(self):
+        response = sample_session_response(
+            decision="WAIT",
+            changes_since_previous="ราคายังไม่ปิดเหนือแนวต้าน",
+            confirmation_level=4470.87,
+            confirmation_status="NOT_REACHED",
+        )
+        message = ai_analysis.format_session_analysis_message(
+            "XAU/USD", "SETUP_CONFIRMATION", response, current_price=4462.67
+        )
+
+        self.assertIn("การเปลี่ยนแปลงจากรอบก่อน: ราคายังไม่ปิดเหนือแนวต้าน", message)
+        self.assertIn("สถานะระดับยืนยัน: NOT_REACHED", message)
+        self.assertIn("4462.67 (ต่ำกว่า ระดับ 4470.87 อยู่ 8.20)", message)
+
+    def test_setup_detection_does_not_show_comparison_fields(self):
+        response = sample_session_response(
+            changes_since_previous="ไม่ควรแสดงในรอบหา setup",
+            confirmation_level=2010.0,
+            confirmation_status="NOT_REACHED",
+        )
+        message = ai_analysis.format_session_analysis_message(
+            "PAXG/USDT", "SETUP_DETECTION", response, current_price=2000.0
+        )
+
+        self.assertNotIn("การเปลี่ยนแปลงจากรอบก่อน", message)
+        self.assertNotIn("สถานะระดับยืนยัน", message)
+
+    def test_trade_decision_stage_shows_news_assessment(self):
+        response = sample_session_response(
+            news_impact_assessment="มีข่าว USD เวลา 20:30 จึงควรรอผลก่อนเข้า",
+        )
+        message = ai_analysis.format_session_analysis_message(
+            "XAU/USD", "SETUP_CONFIRMATION", response
+        )
+
+        self.assertIn("ผลกระทบจากข่าว: มีข่าว USD เวลา 20:30 จึงควรรอผลก่อนเข้า", message)
+
+    def test_final_stage_shows_next_session_direction(self):
+        response = sample_session_response(
+            decision="NO_TRADE",
+            next_session_direction="BEARISH",
+            next_session_outlook="ตราบใดที่ราคายังต่ำกว่า 4470.87 ให้มองลงต่อ",
+        )
+        message = ai_analysis.format_session_analysis_message(
+            "XAU/USD", "FINAL_SESSION_DECISION", response
+        )
+
+        self.assertIn("ทิศทางถัดไป: BEARISH", message)
+        self.assertIn("มุมมองช่วงถัดไป: ตราบใดที่ราคายังต่ำกว่า 4470.87 ให้มองลงต่อ", message)
 
 
 class FormatDailyOutlookMessageTests(unittest.TestCase):

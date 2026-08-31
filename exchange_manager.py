@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -84,6 +85,9 @@ class BinanceManager:
 
 TWELVEDATA_API_URL = "https://api.twelvedata.com/time_series"
 TWELVEDATA_INTERVALS = {"1h": "1h", "4h": "4h", "1d": "1day"}
+TWELVEDATA_TIMEOUT = (5, 12)
+TWELVEDATA_MAX_RETRIES = 2
+TWELVEDATA_RETRY_DELAY_SECONDS = 1.0
 
 
 class TwelveDataManager:
@@ -105,19 +109,40 @@ class TwelveDataManager:
             raise ValueError(
                 "Twelve Data source supports only 1h, 4h, and 1d timeframes"
             )
-        response = requests.get(
-            TWELVEDATA_API_URL,
-            params={
-                "symbol": symbol,
-                "interval": interval,
-                "outputsize": limit,
-                "timezone": "UTC",
-                "apikey": self.api_key,
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
-        return response.json()
+
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": limit,
+            "timezone": "UTC",
+            "apikey": self.api_key,
+        }
+        for attempt in range(TWELVEDATA_MAX_RETRIES + 1):
+            try:
+                response = requests.get(
+                    TWELVEDATA_API_URL,
+                    params=params,
+                    timeout=TWELVEDATA_TIMEOUT,
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.RequestException as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                retryable = status_code is None or status_code == 429 or status_code >= 500
+                if not retryable or attempt == TWELVEDATA_MAX_RETRIES:
+                    raise
+
+                delay = TWELVEDATA_RETRY_DELAY_SECONDS * (2 ** attempt)
+                logger.warning(
+                    "Twelve Data request failed for %s %s (attempt %d/%d, %s); retrying in %.1fs",
+                    symbol,
+                    timeframe,
+                    attempt + 1,
+                    TWELVEDATA_MAX_RETRIES + 1,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
 
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int = 100, since: Optional[int] = None

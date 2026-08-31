@@ -111,11 +111,12 @@ and reasoning in Thai (ภาษาไทย). Keep daily_bias and preferred_str
 their exact English enum values — do not translate those two fields."""
 
 
-_SESSION_THAI_FIELDS_NOTE = """Write buy_scenario, sell_scenario, confirmation_description, invalidation,
-avoid_notes, and reasoning in Thai (ภาษาไทย). Keep decision,
-previous_thesis_status, and market_condition as their exact English enum
-values — do not translate those three fields. Leave any field that does not
-apply to this analysis type as null rather than inventing a placeholder."""
+_SESSION_THAI_FIELDS_NOTE = """Write buy_scenario, sell_scenario, confirmation_description,
+changes_since_previous, news_impact_assessment, next_session_outlook, invalidation, avoid_notes,
+and reasoning in Thai (ภาษาไทย). Keep decision, previous_thesis_status, market_condition,
+confirmation_status, and next_session_direction as their exact English enum values — do not
+translate those five fields. Leave any field that does not apply to this analysis type as null
+rather than inventing a placeholder."""
 
 
 SESSION_PREPARATION_INSTRUCTION = f"""Produce SESSION_PREPARATION (18:00): compare current market conditions
@@ -132,10 +133,10 @@ WAIT when confirmation is missing.
 {_SESSION_THAI_FIELDS_NOTE}"""
 
 
-SETUP_DETECTION_INSTRUCTION = f"""Produce SETUP_DETECTION (19:00): actively search for a high-quality trading
-opportunity, using the DAILY_OUTLOOK and SESSION_PREPARATION results in
-previous_context plus current 4H/1H structure, support/resistance, Asian
-High/Low, previous-day High/Low, and volume.
+SETUP_DETECTION_INSTRUCTION = f"""Produce SETUP_DETECTION (19:00) as a PRE-ENTRY CHECK that may also issue an
+immediate trade setup: actively search for a high-quality trading opportunity, using the
+DAILY_OUTLOOK and SESSION_PREPARATION results in previous_context plus current 4H/1H structure,
+support/resistance, Asian High/Low, previous-day High/Low, and volume.
 
 Check for breakout+retest, liquidity sweep, rejection, trend continuation,
 reversal, volume confirmation, momentum, and distance from key levels.
@@ -149,27 +150,50 @@ If a setup exists but confirmation is still missing: set decision to WAIT
 and make confirmation_description state exactly what must happen before
 entry (e.g. "15M close below 4623") — do not leave it vague.
 
-Do NOT return BUY_SETUP or SELL_SETUP just because price touched a level.
+You may return BUY_SETUP or SELL_SETUP at 19:00 only when current price is inside or sufficiently
+close to a valid support/resistance, supply, or demand zone AND price action confirms the trade
+(for example a rejection, breakout-and-retest, or confirmed close) AND scheduled high-impact news
+does not make the entry unsafe. For either trade decision, populate entry_from/entry_to, stop_loss,
+take_profit_1, take_profit_2, and invalidation. Do NOT return BUY_SETUP or SELL_SETUP merely because
+price touched a level.
+
+Analyze today's scheduled USD high-impact news together with the technical setup. Populate
+news_impact_assessment: when an event is scheduled, state its time and whether it requires
+waiting, invalidates the setup, or is sufficiently distant; when none is scheduled, say that no
+high-impact USD event is affecting this entry check. Do not invent released results.
 
 {_SESSION_THAI_FIELDS_NOTE}"""
 
 
-SETUP_CONFIRMATION_INSTRUCTION = f"""Produce SETUP_CONFIRMATION (20:00): review the SETUP_DETECTION result in
-previous_context against current price action. Set previous_thesis_status
+SETUP_CONFIRMATION_INSTRUCTION = f"""Produce SETUP_CONFIRMATION (20:00) as the TRADE-DECISION GATE: review the
+SETUP_DETECTION result in previous_context against current price action. Set previous_thesis_status
 to exactly one of CONFIRMED, STILL_VALID, WEAKENING, INVALIDATED, or
 COMPLETED, based on whether entry conditions were triggered, whether the
 setup remains valid, whether price already moved too far to enter without
 chasing, whether a pullback should be awaited, and whether upcoming news
 creates excessive risk.
 
-If price has already reached most of the expected move, prefer NO_TRADE or
-WAIT over chasing — do not set decision to BUY_SETUP/SELL_SETUP in that
-case.
+Return BUY_SETUP or SELL_SETUP only when the stated technical confirmation is complete and
+scheduled high-impact news does not make the entry unsafe. For either trade decision, populate
+entry_from/entry_to, stop_loss, take_profit_1, take_profit_2, and invalidation. Otherwise return
+WAIT or NO_TRADE. If price has already reached most of the expected move, prefer NO_TRADE or WAIT
+over chasing.
+
+Analyze today's scheduled USD high-impact news together with the entry decision. Populate
+news_impact_assessment: when an event is scheduled, state its time and whether it blocks, delays,
+or permits this entry; when none is scheduled, say that no high-impact USD event is affecting the
+decision. Do not invent released results.
+
+Populate changes_since_previous with the concrete change since 19:00. Set
+confirmation_level to the single numeric price that must be evaluated, and
+confirmation_status to NOT_REACHED, TOUCHED, CLOSED_CONFIRMED, REJECTED, or
+NOT_APPLICABLE. If there is no usable previous confirmation level, use
+NOT_APPLICABLE and leave confirmation_level null.
 
 {_SESSION_THAI_FIELDS_NOTE}"""
 
 
-FINAL_SESSION_DECISION_INSTRUCTION = f"""Produce FINAL_SESSION_DECISION (21:00): review the complete session using
+FINAL_SESSION_DECISION_INSTRUCTION = f"""Produce FINAL_SESSION_DECISION (21:00) as a DIRECTIONAL OUTLOOK: review the complete session using
 DAILY_OUTLOOK, SESSION_PREPARATION, SETUP_DETECTION, and SETUP_CONFIRMATION
 in previous_context, plus current price and 1H/4H structure. Determine
 whether the daily bias was correct, the current session direction, the
@@ -179,6 +203,19 @@ whether the market looks too volatile or extended to enter now.
 
 Strongly prefer NO_TRADE when the move has already completed or
 risk/reward looks poor — do not force a new setup here just because the
-session is ending.
+session is ending. Populate next_session_direction with BULLISH, BEARISH,
+RANGE, or UNCERTAIN, and explain the next likely direction and the level
+that would invalidate it in next_session_outlook.
+
+Analyze today's scheduled USD high-impact news together with the directional outlook. Populate
+news_impact_assessment: when an event is scheduled, state its time and how it could affect the
+next direction; when none is scheduled, say that no high-impact USD event is affecting the
+outlook. Do not invent released results.
+
+Populate changes_since_previous with the concrete change since 20:00. Set
+confirmation_level to the single numeric price that is most relevant now,
+and confirmation_status to NOT_REACHED, TOUCHED, CLOSED_CONFIRMED, REJECTED,
+or NOT_APPLICABLE. If there is no usable confirmation level, use
+NOT_APPLICABLE and leave confirmation_level null.
 
 {_SESSION_THAI_FIELDS_NOTE}"""

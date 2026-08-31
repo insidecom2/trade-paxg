@@ -34,6 +34,9 @@ class DailyOutlookResponse(BaseModel):
 
 TradeDecision = Literal["BUY_SETUP", "SELL_SETUP", "WAIT", "NO_TRADE"]
 PreviousThesisStatus = Literal["CONFIRMED", "STILL_VALID", "WEAKENING", "INVALIDATED", "COMPLETED"]
+ConfirmationStatus = Literal[
+    "NOT_REACHED", "TOUCHED", "CLOSED_CONFIRMED", "REJECTED", "NOT_APPLICABLE"
+]
 MarketCondition = Literal[
     "LIQUIDITY_SWEEP", "BREAKOUT_RETEST", "TREND_CONTINUATION", "REVERSAL", "RANGE", "UNCLEAR"
 ]
@@ -55,6 +58,12 @@ class SessionAnalysisResponse(BaseModel):
     entry_from: Optional[float] = None
     entry_to: Optional[float] = None
     confirmation_description: Optional[str] = None
+    changes_since_previous: Optional[str] = None
+    confirmation_level: Optional[float] = None
+    confirmation_status: Optional[ConfirmationStatus] = None
+    news_impact_assessment: Optional[str] = None
+    next_session_direction: Optional[DailyBias] = None
+    next_session_outlook: Optional[str] = None
     stop_loss: Optional[float] = None
     take_profit_1: Optional[float] = None
     take_profit_2: Optional[float] = None

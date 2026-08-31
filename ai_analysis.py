@@ -438,9 +438,9 @@ def format_daily_outlook_message(
 
 SESSION_STAGE_LABELS = {
     "SESSION_PREPARATION": "เตรียมเซสชัน 18:00",
-    "SETUP_DETECTION": "หา Setup 19:00",
-    "SETUP_CONFIRMATION": "ยืนยัน Setup 20:00",
-    "FINAL_SESSION_DECISION": "สรุปเซสชัน 21:00",
+    "SETUP_DETECTION": "ตรวจสอบ/เข้าเทรด 19:00",
+    "SETUP_CONFIRMATION": "ตัดสินใจเข้าเทรด 20:00",
+    "FINAL_SESSION_DECISION": "แนวโน้มทิศทาง 21:00",
 }
 
 
@@ -449,6 +449,7 @@ def format_session_analysis_message(
     analysis_type: str,
     response: SessionAnalysisResponse,
     todays_events: Optional[List] = None,
+    current_price: Optional[float] = None,
 ) -> str:
     label = SESSION_STAGE_LABELS.get(analysis_type, analysis_type)
     lines = [
@@ -466,6 +467,26 @@ def format_session_analysis_message(
         lines.append(f"โซนเข้า: {response.entry_from:.2f} - {response.entry_to:.2f}")
     if response.confirmation_description:
         lines.append(f"เงื่อนไขยืนยัน: {response.confirmation_description}")
+    if response.news_impact_assessment:
+        lines.append(f"ผลกระทบจากข่าว: {response.news_impact_assessment}")
+    if analysis_type in {"SETUP_CONFIRMATION", "FINAL_SESSION_DECISION"}:
+        if response.changes_since_previous:
+            lines.append(f"การเปลี่ยนแปลงจากรอบก่อน: {response.changes_since_previous}")
+        if response.confirmation_status:
+            lines.append(f"สถานะระดับยืนยัน: {response.confirmation_status}")
+        if response.confirmation_level is not None and current_price is not None:
+            distance = abs(current_price - response.confirmation_level)
+            relation = "สูงกว่า" if current_price >= response.confirmation_level else "ต่ำกว่า"
+            lines.append(
+                "ราคาปัจจุบันเทียบระดับยืนยัน: "
+                f"{current_price:.2f} ({relation} ระดับ {response.confirmation_level:.2f} "
+                f"อยู่ {distance:.2f})"
+            )
+    if analysis_type == "FINAL_SESSION_DECISION":
+        if response.next_session_direction:
+            lines.append(f"ทิศทางถัดไป: {response.next_session_direction}")
+        if response.next_session_outlook:
+            lines.append(f"มุมมองช่วงถัดไป: {response.next_session_outlook}")
     if response.stop_loss is not None:
         lines.append(f"Stop Loss: {response.stop_loss:.2f}")
     if response.take_profit_1 is not None:
@@ -655,7 +676,11 @@ async def run_session_analysis(
             return True
 
         message = format_session_analysis_message(
-            symbol, analysis_type, response, request.todays_usd_high_impact_events
+            symbol,
+            analysis_type,
+            response,
+            request.todays_usd_high_impact_events,
+            request.current_price,
         )
         notifier = TelegramNotifier.from_env()
         sent = False
