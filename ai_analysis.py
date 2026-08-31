@@ -111,6 +111,20 @@ def _analysis_enabled() -> bool:
     return os.getenv("AI_ANALYSIS_ENABLED", "false").strip().lower() == "true"
 
 
+def _log_analysis_enabled(analysis_type: str, symbol: str) -> bool:
+    """Log the effective feature-flag value without exposing secrets."""
+    configured_value = os.getenv("AI_ANALYSIS_ENABLED", "<unset>")
+    enabled = _analysis_enabled()
+    logger.info(
+        "ai.analysis.configuration AI_ANALYSIS_ENABLED=%s enabled=%s analysisType=%s symbol=%s",
+        configured_value,
+        str(enabled).lower(),
+        analysis_type,
+        symbol,
+    )
+    return enabled
+
+
 def _news_calendar_enabled() -> bool:
     # No API key needed for this source, so it defaults on; kept behind its
     # own flag anyway so it can be switched off without a redeploy if the
@@ -480,7 +494,7 @@ def format_session_analysis_message(
 
 async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] = None) -> bool:
     symbol = _resolve_symbol(symbol)
-    if not _analysis_enabled():
+    if not _log_analysis_enabled(ANALYSIS_TYPE, symbol):
         logger.info("ai.analysis.skipped reason=disabled analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
         return True
 
@@ -582,7 +596,7 @@ async def run_session_analysis(
     state_key_suffix = stage["state_key_suffix"]
 
     symbol = _resolve_symbol(symbol)
-    if not _analysis_enabled():
+    if not _log_analysis_enabled(analysis_type, symbol):
         logger.info("ai.analysis.skipped reason=disabled analysisType=%s symbol=%s", analysis_type, symbol)
         return True
 
