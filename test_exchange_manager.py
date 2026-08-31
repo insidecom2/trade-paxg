@@ -1,6 +1,8 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import requests
 
 from exchange_manager import (
     TwelveDataManager,
@@ -35,6 +37,65 @@ class ExchangeManagerTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "TWELVEDATA_API_KEY"):
                 TwelveDataManager()
+
+    def test_twelvedata_manager_retries_timeout_then_returns_payload(self):
+        payload = {"status": "ok", "values": []}
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = payload
+
+        with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):
+            manager = TwelveDataManager()
+            with (
+                patch("exchange_manager.requests.get", side_effect=[
+                    requests.ReadTimeout("slow response"), response,
+                ]) as request_get,
+                patch("exchange_manager.time.sleep") as sleep,
+            ):
+                actual = manager._fetch_sync("XAU/USD", "1h", 250)
+
+        self.assertEqual(actual, payload)
+        self.assertEqual(request_get.call_count, 2)
+        sleep.assert_called_once_with(1.0)
+
+    def test_twelvedata_manager_does_not_retry_client_error(self):
+        response = Mock()
+        response.status_code = 401
+        error = requests.HTTPError("unauthorized", response=response)
+
+        with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):
+            manager = TwelveDataManager()
+            with (
+                patch("exchange_manager.requests.get", side_effect=error) as request_get,
+                patch("exchange_manager.time.sleep") as sleep,
+            ):
+                with self.assertRaisesRegex(requests.HTTPError, "unauthorized"):
+                    manager._fetch_sync("XAU/USD", "1h", 250)
+
+        self.assertEqual(request_get.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_twelvedata_manager_retries_rate_limit(self):
+        rate_limited_response = Mock(status_code=429)
+        rate_limited = requests.HTTPError("rate limited", response=rate_limited_response)
+        payload = {"status": "ok", "values": []}
+        success_response = Mock()
+        success_response.raise_for_status.return_value = None
+        success_response.json.return_value = payload
+
+        with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):
+            manager = TwelveDataManager()
+            with (
+                patch("exchange_manager.requests.get", side_effect=[
+                    rate_limited, success_response,
+                ]) as request_get,
+                patch("exchange_manager.time.sleep") as sleep,
+            ):
+                actual = manager._fetch_sync("XAU/USD", "4h", 250)
+
+        self.assertEqual(actual, payload)
+        self.assertEqual(request_get.call_count, 2)
+        sleep.assert_called_once_with(1.0)
 
     async def test_twelvedata_manager_parses_candles_oldest_first(self):
         payload = {
