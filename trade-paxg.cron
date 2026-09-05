@@ -12,6 +12,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # 4h strategy notifications are disabled. Run /app/run_cron_job.sh 4h manually when needed.
 # 1 0,4,8,12,16,20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-4h.lock /app/run_cron_job.sh 4h >> /proc/1/fd/1 2>> /proc/1/fd/2
 
+# MySQL XAU/USD level alert. Run five minutes after 4H candle boundaries in
+# Bangkok, Mon-Fri. This schedule is enabled independently of strategy alerts.
+5 3,7,11,15,19,23 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-price-alert.lock /app/run_price_alert_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+
 # Liquidity sweep watch on 1h, restricted to 12:00-21:00 Bangkok (CRON_TZ above), Mon-Fri.
 # Liquidity-sweep notifications are disabled. Run /app/run_liquidity_sweep_job.sh manually when needed.
 # 0 12-20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-liquidity-sweep.lock /app/run_liquidity_sweep_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
