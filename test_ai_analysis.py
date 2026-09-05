@@ -192,15 +192,42 @@ class BuildDailyOutlookContextTests(unittest.IsolatedAsyncioTestCase):
             "1d": make_candles(3, step_ms=86_400_000),
         })
         fake_calendar = NewsCalendarClient()
+        unavailable_data = []
         with patch.object(
             fake_calendar, "fetch_todays_usd_high_impact_events", side_effect=RuntimeError("boom")
         ):
             request = await ai_analysis.build_daily_outlook_context(
-                "PAXG/USDT", market_data, MarketAnalyzer(), news_calendar_client=fake_calendar,
+                "PAXG/USDT", market_data, MarketAnalyzer(),
+                news_calendar_client=fake_calendar,
+                unavailable_data=unavailable_data,
             )
         self.assertIsNotNone(request)
         self.assertEqual(request.todays_usd_high_impact_events, [])
         self.assertIn("unavailable", request.news_calendar_note.lower())
+        self.assertEqual(unavailable_data, ["ปฏิทินข่าว USD"])
+
+    async def test_missing_market_data_is_recorded(self):
+        from analyzer import MarketAnalyzer
+
+        class BrokenMarketData(FakeMarketData):
+            async def fetch_ohlcv(self, symbol, timeframe, limit=100, since=None):
+                if timeframe == "1h":
+                    raise RuntimeError("market unavailable")
+                return await super().fetch_ohlcv(symbol, timeframe, limit, since)
+
+        market_data = BrokenMarketData({
+            "4h": make_candles(250, step_ms=4 * 3_600_000),
+            "1d": make_candles(3, step_ms=86_400_000),
+        })
+        unavailable_data = []
+        request = await ai_analysis.build_daily_outlook_context(
+            "PAXG/USDT",
+            market_data,
+            MarketAnalyzer(),
+            unavailable_data=unavailable_data,
+        )
+        self.assertIsNone(request)
+        self.assertEqual(unavailable_data, ["ตลาด 1H"])
 
 
 class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
@@ -268,22 +295,30 @@ class RunDailyOutlookTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("AI_ANALYSIS_ENABLED=<unset> enabled=false", "\n".join(logs.output))
 
     async def test_missing_api_key_skips_gracefully(self):
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
         with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true"}):
-            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=None):
+            with patch("ai_analysis.AIAnalysisClient.from_env", return_value=None), \
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
                 result = await ai_analysis.run_daily_outlook("PAXG/USDT")
         self.assertTrue(result)
+        notifier.send_message.assert_awaited_once()
+        self.assertIn("OpenAI", notifier.send_message.await_args.args[0])
 
-    async def test_openai_failure_does_not_crash_and_sends_no_telegram(self):
+    async def test_openai_failure_sends_unavailable_data_summary(self):
         fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
         with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true", "OPENAI_API_KEY": "x"}):
             with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
                  patch.object(fake_client, "analyze", return_value=None), \
-                 patch("ai_analysis.TelegramNotifier.from_env") as notifier_from_env:
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
                 result = await ai_analysis.run_daily_outlook(
                     "PAXG/USDT", now=datetime(2024, 1, 8, 1, 0, tzinfo=timezone.utc)
                 )
         self.assertTrue(result)
-        notifier_from_env.assert_not_called()
+        notifier.send_message.assert_awaited_once()
+        self.assertIn("OpenAI", notifier.send_message.await_args.args[0])
         state = TradingStateStore(self._state_path).get("PAXG/USDT|ai_daily_outlook")
         self.assertEqual(state.get("status"), "failed")
 
@@ -482,18 +517,21 @@ class RunSessionAnalysisTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         notifier.send_message.assert_awaited_once()
 
-    async def test_openai_failure_does_not_crash_session_stage(self):
+    async def test_openai_failure_sends_unavailable_data_summary(self):
         fake_client = AIAnalysisClient(api_key="x")
+        notifier = AsyncMock()
+        notifier.send_message = AsyncMock(return_value=True)
         with patch.dict("os.environ", {"AI_ANALYSIS_ENABLED": "true", "OPENAI_API_KEY": "x"}):
             with patch("ai_analysis.AIAnalysisClient.from_env", return_value=fake_client), \
                  patch.object(fake_client, "analyze", return_value=None), \
-                 patch("ai_analysis.TelegramNotifier.from_env") as notifier_from_env:
+                 patch("ai_analysis.TelegramNotifier.from_env", return_value=notifier):
                 result = await ai_analysis.run_session_analysis(
                     "final_session_decision", "PAXG/USDT",
                     now=datetime(2024, 1, 8, 12, 0, tzinfo=timezone.utc),
                 )
         self.assertTrue(result)
-        notifier_from_env.assert_not_called()
+        notifier.send_message.assert_awaited_once()
+        self.assertIn("OpenAI", notifier.send_message.await_args.args[0])
 
 
 class LoadPreviousStageContextTests(unittest.TestCase):
@@ -601,6 +639,18 @@ class FormatSessionAnalysisMessageTests(unittest.TestCase):
         )
 
         self.assertIn("ผลกระทบจากข่าว: มีข่าว USD เวลา 20:30 จึงควรรอผลก่อนเข้า", message)
+
+    def test_unavailable_data_is_visible_in_session_message(self):
+        response = sample_session_response()
+        message = ai_analysis.format_session_analysis_message(
+            "XAU/USD",
+            "SETUP_CONFIRMATION",
+            response,
+            unavailable_data=["ปฏิทินข่าว USD", "ตลาด 1H"],
+        )
+        self.assertIn("ข้อมูลที่เรียกไม่ได้ในรอบนี้:", message)
+        self.assertIn("ปฏิทินข่าว USD", message)
+        self.assertIn("ตลาด 1H", message)
 
     def test_final_stage_shows_next_session_direction(self):
         response = sample_session_response(

@@ -37,6 +37,7 @@ USD = "USD"
 class NewsCalendarClient:
     def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
+        self.last_error: Optional[str] = None
 
     def _fetch_sync(self) -> List[dict]:
         response = requests.get(CALENDAR_URL, timeout=self.timeout)
@@ -58,9 +59,11 @@ class NewsCalendarClient:
         (bangkok_now, is_within_notification_window, etc.) — the calendar
         source itself reports event times in US Eastern.
         """
+        self.last_error = None
         try:
             raw_events = self._fetch_sync()
         except (requests.RequestException, ValueError) as exc:
+            self.last_error = type(exc).__name__
             logger.warning("News calendar request failed: %s", exc)
             return []
 

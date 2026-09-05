@@ -132,6 +132,66 @@ def _news_calendar_enabled() -> bool:
     return os.getenv("AI_NEWS_CALENDAR_ENABLED", "true").strip().lower() == "true"
 
 
+def _record_unavailable(unavailable_data: Optional[List[str]], source: str) -> None:
+    if unavailable_data is not None and source not in unavailable_data:
+        unavailable_data.append(source)
+
+
+def _format_unavailable_data_block(unavailable_data: Optional[List[str]]) -> List[str]:
+    if not unavailable_data:
+        return []
+    return ["", "ข้อมูลที่เรียกไม่ได้ในรอบนี้:"] + [f"- {item}" for item in unavailable_data]
+
+
+async def _send_unavailable_data_alert(
+    notifier: Optional[TelegramNotifier],
+    analysis_type: str,
+    symbol: str,
+    unavailable_data: List[str],
+) -> bool:
+    if not unavailable_data:
+        return False
+    message = "\n".join(
+        [
+            f"GOLD AI ANALYSIS — ข้อมูลไม่พร้อม ({analysis_type})",
+            "",
+            f"สัญลักษณ์: {symbol}",
+            "ข้อมูลที่เรียกไม่ได้:",
+            *[f"- {item}" for item in unavailable_data],
+            "",
+            "รอบนี้จึงไม่มีผลวิเคราะห์สมบูรณ์จากข้อมูลที่ขาดหาย",
+        ]
+    )
+    if notifier is None:
+        logger.warning(
+            "telegram.ai_alert.skipped reason=notifier_unavailable analysisType=%s unavailable=%s",
+            analysis_type,
+            unavailable_data,
+        )
+        return False
+    try:
+        sent = await notifier.send_message(message)
+    except Exception:
+        logger.exception(
+            "telegram.ai_alert.failed reason=unavailable_data analysisType=%s",
+            analysis_type,
+        )
+        return False
+    if sent:
+        logger.info(
+            "telegram.ai_alert.sent reason=unavailable_data analysisType=%s symbol=%s unavailable=%s",
+            analysis_type,
+            symbol,
+            unavailable_data,
+        )
+    else:
+        logger.warning(
+            "telegram.ai_alert.rejected reason=unavailable_data analysisType=%s",
+            analysis_type,
+        )
+    return sent
+
+
 def _resolve_price_source() -> Optional[str]:
     """AI_PRICE_SOURCE lets this pipeline use a different market data source
     (e.g. twelvedata/XAU-USD) than the strategy/liquidity-sweep pipelines
@@ -187,7 +247,9 @@ def _format_zones(zones) -> List[str]:
     return [f"{zone.type} {zone.bottom:.2f}-{zone.top:.2f}" for zone in zones]
 
 
-async def _fetch_macro_data(fred_client: Optional[FredClient]) -> tuple[list, str]:
+async def _fetch_macro_data(
+    fred_client: Optional[FredClient], unavailable_data: Optional[List[str]] = None
+) -> tuple[list, str]:
     if fred_client is None:
         return [], (
             "No economic data source is configured for this analysis "
@@ -196,8 +258,12 @@ async def _fetch_macro_data(fred_client: Optional[FredClient]) -> tuple[list, st
     try:
         points = await fred_client.fetch_latest_released()
     except Exception as exc:  # macro data is best-effort, never fatal
+        _record_unavailable(unavailable_data, "ข้อมูลเศรษฐกิจ FRED")
         logger.warning("FRED lookup failed, continuing without macro data: %s", exc)
         return [], "Economic data lookup failed; treat macro context as unavailable."
+
+    for series_id in getattr(fred_client, "last_failures", []):
+        _record_unavailable(unavailable_data, f"ข้อมูลเศรษฐกิจ FRED: {series_id}")
 
     note = (
         "These are the most recently RELEASED actual values for a fixed set "
@@ -210,7 +276,9 @@ async def _fetch_macro_data(fred_client: Optional[FredClient]) -> tuple[list, st
 
 
 async def _fetch_news_calendar(
-    news_calendar_client: Optional[NewsCalendarClient], reference_time: datetime
+    news_calendar_client: Optional[NewsCalendarClient],
+    reference_time: datetime,
+    unavailable_data: Optional[List[str]] = None,
 ) -> tuple[list, str]:
     if news_calendar_client is None:
         return [], "No forward-looking news calendar is supplied for this analysis type."
@@ -220,7 +288,12 @@ async def _fetch_news_calendar(
             news_calendar_client.fetch_todays_usd_high_impact_events, today_bangkok
         )
     except Exception as exc:  # calendar lookup is best-effort, never fatal
+        _record_unavailable(unavailable_data, "ปฏิทินข่าว USD")
         logger.warning("News calendar lookup failed, continuing without it: %s", exc)
+        return [], "News calendar lookup failed; treat today's event list as unavailable."
+
+    if getattr(news_calendar_client, "last_error", None):
+        _record_unavailable(unavailable_data, "ปฏิทินข่าว USD")
         return [], "News calendar lookup failed; treat today's event list as unavailable."
 
     if not events:
@@ -247,13 +320,33 @@ async def _gather_common_context(
     reference_time: datetime,
     fred_client: Optional[FredClient],
     news_calendar_client: Optional[NewsCalendarClient],
+    unavailable_data: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """Market/indicator/macro/news fields shared by every analysis type.
     Returns None if there isn't enough candle history to proceed.
     """
-    candles_4h = _closed_candles(await market_data.fetch_ohlcv(symbol, H4_TIMEFRAME, limit=H4_CANDLE_LIMIT))
-    candles_1h = _closed_candles(await market_data.fetch_ohlcv(symbol, H1_TIMEFRAME, limit=H1_CANDLE_LIMIT))
-    candles_1d = _closed_candles(await market_data.fetch_ohlcv(symbol, DAILY_TIMEFRAME, limit=DAILY_CANDLE_LIMIT))
+    candle_requests = (
+        (H4_TIMEFRAME, H4_CANDLE_LIMIT, "ตลาด 4H"),
+        (H1_TIMEFRAME, H1_CANDLE_LIMIT, "ตลาด 1H"),
+        (DAILY_TIMEFRAME, DAILY_CANDLE_LIMIT, "ตลาด 1D"),
+    )
+    fetched_candles = {}
+    for timeframe, limit, label in candle_requests:
+        try:
+            candles = _closed_candles(
+                await market_data.fetch_ohlcv(symbol, timeframe, limit=limit)
+            )
+        except Exception as exc:
+            _record_unavailable(unavailable_data, label)
+            logger.warning("Market data lookup failed for %s: %s", timeframe, exc)
+            candles = []
+        if not candles:
+            _record_unavailable(unavailable_data, label)
+        fetched_candles[timeframe] = candles
+
+    candles_4h = fetched_candles[H4_TIMEFRAME]
+    candles_1h = fetched_candles[H1_TIMEFRAME]
+    candles_1d = fetched_candles[DAILY_TIMEFRAME]
 
     if not candles_4h or not candles_1h:
         logger.warning("Missing 4h/1h candles; cannot build analysis context.")
@@ -275,8 +368,10 @@ async def _gather_common_context(
     supply_zones = [z for z in supply_demand if z.type == "SUPPLY"]
     demand_zones = [z for z in supply_demand if z.type == "DEMAND"]
 
-    macro_data, macro_note = await _fetch_macro_data(fred_client)
-    news_events, news_note = await _fetch_news_calendar(news_calendar_client, reference_time)
+    macro_data, macro_note = await _fetch_macro_data(fred_client, unavailable_data)
+    news_events, news_note = await _fetch_news_calendar(
+        news_calendar_client, reference_time, unavailable_data
+    )
 
     return dict(
         current_price=current_price,
@@ -292,6 +387,7 @@ async def _gather_common_context(
         macro_data_note=macro_note,
         todays_usd_high_impact_events=news_events,
         news_calendar_note=news_note,
+        unavailable_data=unavailable_data or [],
     )
 
 
@@ -302,10 +398,17 @@ async def build_daily_outlook_context(
     reference_time: Optional[datetime] = None,
     fred_client: Optional[FredClient] = None,
     news_calendar_client: Optional[NewsCalendarClient] = None,
+    unavailable_data: Optional[List[str]] = None,
 ) -> Optional[GoldAIAnalysisRequest]:
     reference_time = reference_time or datetime.now(timezone.utc)
     common = await _gather_common_context(
-        symbol, market_data, analyzer, reference_time, fred_client, news_calendar_client
+        symbol,
+        market_data,
+        analyzer,
+        reference_time,
+        fred_client,
+        news_calendar_client,
+        unavailable_data,
     )
     if common is None:
         return None
@@ -329,10 +432,17 @@ async def build_session_context(
     news_calendar_client: Optional[NewsCalendarClient] = None,
     previous_context: str = "",
     previous_context_note: str = "",
+    unavailable_data: Optional[List[str]] = None,
 ) -> Optional[GoldAIAnalysisRequest]:
     reference_time = reference_time or datetime.now(timezone.utc)
     common = await _gather_common_context(
-        symbol, market_data, analyzer, reference_time, fred_client, news_calendar_client
+        symbol,
+        market_data,
+        analyzer,
+        reference_time,
+        fred_client,
+        news_calendar_client,
+        unavailable_data,
     )
     if common is None:
         return None
@@ -406,6 +516,7 @@ def format_daily_outlook_message(
     symbol: str,
     response: DailyOutlookResponse,
     todays_events: Optional[List] = None,
+    unavailable_data: Optional[List[str]] = None,
 ) -> str:
     lines = [
         "GOLD AI ANALYSIS — ภาพรวมประจำวัน",
@@ -423,6 +534,7 @@ def format_daily_outlook_message(
         lines.append(f"เป้าหมาย Liquidity: {', '.join(response.liquidity_targets)}")
 
     lines += _format_todays_events_block(todays_events)
+    lines += _format_unavailable_data_block(unavailable_data)
 
     lines += [
         "",
@@ -450,6 +562,7 @@ def format_session_analysis_message(
     response: SessionAnalysisResponse,
     todays_events: Optional[List] = None,
     current_price: Optional[float] = None,
+    unavailable_data: Optional[List[str]] = None,
 ) -> str:
     label = SESSION_STAGE_LABELS.get(analysis_type, analysis_type)
     lines = [
@@ -495,6 +608,7 @@ def format_session_analysis_message(
         lines.append(f"TP2: {response.take_profit_2:.2f}")
 
     lines += _format_todays_events_block(todays_events)
+    lines += _format_unavailable_data_block(unavailable_data)
 
     lines.append("")
     if response.buy_scenario:
@@ -521,6 +635,10 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
 
     ai_client = AIAnalysisClient.from_env()
     if ai_client is None:
+        notifier = TelegramNotifier.from_env()
+        await _send_unavailable_data_alert(
+            notifier, ANALYSIS_TYPE, symbol, ["OpenAI"]
+        )
         logger.info("ai.analysis.skipped reason=missing_api_key analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
         return True
 
@@ -538,15 +656,32 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
 
     logger.info("ai.analysis.started analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
     market_data = None
+    notifier = TelegramNotifier.from_env()
+    unavailable_data: List[str] = []
     try:
-        market_data = create_market_data_manager(_resolve_price_source())
+        try:
+            market_data = create_market_data_manager(_resolve_price_source())
+        except Exception:
+            _record_unavailable(unavailable_data, "ตัวจัดการข้อมูลตลาด")
+            raise
         analyzer = MarketAnalyzer()
         fred_client = FredClient.from_env()
         news_calendar_client = NewsCalendarClient() if _news_calendar_enabled() else None
         request = await build_daily_outlook_context(
-            symbol, market_data, analyzer, reference_time, fred_client, news_calendar_client
+            symbol,
+            market_data,
+            analyzer,
+            reference_time,
+            fred_client,
+            news_calendar_client,
+            unavailable_data,
         )
         if request is None:
+            if not unavailable_data:
+                _record_unavailable(unavailable_data, "ตลาด 4H/1H")
+            await _send_unavailable_data_alert(
+                notifier, ANALYSIS_TYPE, symbol, unavailable_data
+            )
             logger.warning("ai.analysis.skipped reason=missing_market_data analysisType=%s symbol=%s", ANALYSIS_TYPE, symbol)
             return True
 
@@ -559,6 +694,10 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
         )
 
         if response is None:
+            _record_unavailable(unavailable_data, "OpenAI")
+            await _send_unavailable_data_alert(
+                notifier, ANALYSIS_TYPE, symbol, unavailable_data
+            )
             logger.warning("ai.analysis.failed analysisType=%s symbol=%s reason=invalid_or_no_response", ANALYSIS_TYPE, symbol)
             state_store.save(state_key, {
                 "date": local_date,
@@ -568,8 +707,12 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
             })
             return True
 
-        message = format_daily_outlook_message(symbol, response, request.todays_usd_high_impact_events)
-        notifier = TelegramNotifier.from_env()
+        message = format_daily_outlook_message(
+            symbol,
+            response,
+            request.todays_usd_high_impact_events,
+            request.unavailable_data,
+        )
         sent = False
         if notifier is not None:
             sent = await notifier.send_message(message)
@@ -595,6 +738,11 @@ async def run_daily_outlook(symbol: str = "PAXG/USDT", now: Optional[datetime] =
         logger.info("ai.analysis.completed analysisType=%s symbol=%s decision=%s confidence=%d", ANALYSIS_TYPE, symbol, response.daily_bias, response.confidence)
         return True
     except Exception as e:
+        if not unavailable_data:
+            _record_unavailable(unavailable_data, "ระบบวิเคราะห์ AI")
+        await _send_unavailable_data_alert(
+            notifier, ANALYSIS_TYPE, symbol, unavailable_data
+        )
         logger.critical("ai.analysis.failed analysisType=%s symbol=%s error=%s", ANALYSIS_TYPE, symbol, e, exc_info=True)
         return False
     finally:
@@ -623,6 +771,10 @@ async def run_session_analysis(
 
     ai_client = AIAnalysisClient.from_env()
     if ai_client is None:
+        notifier = TelegramNotifier.from_env()
+        await _send_unavailable_data_alert(
+            notifier, analysis_type, symbol, ["OpenAI"]
+        )
         logger.info("ai.analysis.skipped reason=missing_api_key analysisType=%s symbol=%s", analysis_type, symbol)
         return True
 
@@ -640,20 +792,39 @@ async def run_session_analysis(
 
     logger.info("ai.analysis.started analysisType=%s symbol=%s", analysis_type, symbol)
     market_data = None
+    notifier = TelegramNotifier.from_env()
+    unavailable_data: List[str] = []
     try:
         previous_context, previous_context_note = _load_previous_stage_context(
             state_store, symbol, local_date, stage["requires"]
         )
 
-        market_data = create_market_data_manager(_resolve_price_source())
+        try:
+            market_data = create_market_data_manager(_resolve_price_source())
+        except Exception:
+            _record_unavailable(unavailable_data, "ตัวจัดการข้อมูลตลาด")
+            raise
         analyzer = MarketAnalyzer()
         fred_client = FredClient.from_env()
         news_calendar_client = NewsCalendarClient() if _news_calendar_enabled() else None
         request = await build_session_context(
-            stage_key, symbol, market_data, analyzer, reference_time,
-            fred_client, news_calendar_client, previous_context, previous_context_note,
+            stage_key,
+            symbol,
+            market_data,
+            analyzer,
+            reference_time,
+            fred_client,
+            news_calendar_client,
+            previous_context,
+            previous_context_note,
+            unavailable_data,
         )
         if request is None:
+            if not unavailable_data:
+                _record_unavailable(unavailable_data, "ตลาด 4H/1H")
+            await _send_unavailable_data_alert(
+                notifier, analysis_type, symbol, unavailable_data
+            )
             logger.warning("ai.analysis.skipped reason=missing_market_data analysisType=%s symbol=%s", analysis_type, symbol)
             return True
 
@@ -666,6 +837,10 @@ async def run_session_analysis(
         )
 
         if response is None:
+            _record_unavailable(unavailable_data, "OpenAI")
+            await _send_unavailable_data_alert(
+                notifier, analysis_type, symbol, unavailable_data
+            )
             logger.warning("ai.analysis.failed analysisType=%s symbol=%s reason=invalid_or_no_response", analysis_type, symbol)
             state_store.save(state_key, {
                 "date": local_date,
@@ -681,8 +856,8 @@ async def run_session_analysis(
             response,
             request.todays_usd_high_impact_events,
             request.current_price,
+            request.unavailable_data,
         )
-        notifier = TelegramNotifier.from_env()
         sent = False
         if notifier is not None:
             sent = await notifier.send_message(message)
@@ -708,6 +883,11 @@ async def run_session_analysis(
         )
         return True
     except Exception as e:
+        if not unavailable_data:
+            _record_unavailable(unavailable_data, "ระบบวิเคราะห์ AI")
+        await _send_unavailable_data_alert(
+            notifier, analysis_type, symbol, unavailable_data
+        )
         logger.critical("ai.analysis.failed analysisType=%s symbol=%s error=%s", analysis_type, symbol, e, exc_info=True)
         return False
     finally:

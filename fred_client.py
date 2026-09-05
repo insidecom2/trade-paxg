@@ -36,6 +36,7 @@ class FredClient:
     def __init__(self, api_key: str, timeout: float = 15.0):
         self.api_key = api_key
         self.timeout = timeout
+        self.last_failures: List[str] = []
 
     @classmethod
     def from_env(cls) -> Optional["FredClient"]:
@@ -44,6 +45,10 @@ class FredClient:
             logger.info("FRED_API_KEY not set; macro data omitted from AI context")
             return None
         return cls(api_key)
+
+    def _record_failure(self, series_id: str) -> None:
+        if series_id not in self.last_failures:
+            self.last_failures.append(series_id)
 
     def _fetch_latest_sync(self, series_id: str) -> Optional[MacroDataPoint]:
         try:
@@ -61,15 +66,18 @@ class FredClient:
             response.raise_for_status()
             observations = response.json().get("observations", [])
         except (requests.RequestException, ValueError) as exc:
+            self._record_failure(series_id)
             logger.warning("FRED request failed for %s: %s", series_id, exc)
             return None
 
         if not observations:
+            self._record_failure(series_id)
             return None
         obs = observations[0]
         try:
             value = float(obs["value"])
         except (KeyError, ValueError, TypeError):
+            self._record_failure(series_id)
             logger.warning("FRED returned a non-numeric value for %s: %s", series_id, obs)
             return None
 
@@ -84,6 +92,7 @@ class FredClient:
         Best-effort: a failure on one series is logged and skipped, it
         never aborts the others or raises to the caller.
         """
+        self.last_failures = []
         results = await asyncio.gather(
             *(
                 asyncio.to_thread(self._fetch_latest_sync, series_id)
