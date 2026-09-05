@@ -138,6 +138,7 @@ class GoldAIAnalysisRequest(BaseModel):
     news_calendar_note: str = (
         "No forward-looking news calendar is supplied for this analysis type."
     )
+    unavailable_data: List[str] = Field(default_factory=list)
 
     # Compact JSON summary of the prior stage(s) this run should build on
     # (e.g. SETUP_DETECTION includes DAILY_OUTLOOK + SESSION_PREPARATION).
