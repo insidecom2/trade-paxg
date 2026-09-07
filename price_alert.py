@@ -26,8 +26,9 @@ load_dotenv()
 BANGKOK_TIMEZONE = ZoneInfo("Asia/Bangkok")
 ALERT_SYMBOL = "XAUUSD"
 MARKET_SYMBOL = "XAU/USD"
-TIMEFRAME = "4h"
 TIMEFRAME_MS = 4 * 60 * 60 * 1000
+ONE_HOUR_MS = 60 * 60 * 1000
+PRICE_ALERT_CANDLE_LIMIT = 6
 STATE_KEY = "XAUUSD|mysql_price_alert"
 
 
@@ -133,14 +134,41 @@ class MySQLPriceAlertRepository:
         return await asyncio.to_thread(self._fetch_sync, start, end)
 
 
-def latest_closed_candle(candles: Iterable[Candle]) -> Candle:
-    """Use the penultimate candle because providers include the live candle last."""
+def latest_closed_bangkok_4h_candle(candles: Iterable[Candle]) -> Candle:
+    """Build the latest closed 4H candle on Bangkok clock boundaries.
+
+    Twelve Data's native 4H bars need not start at Bangkok midnight.  This
+    worker instead combines four closed 1H bars into 00-04, 04-08, and so on.
+    The final returned 1H bar is treated as the provider's live bar.
+    """
     ordered = list(candles)
-    if len(ordered) < 2:
-        raise ValueError("At least two 4-hour candles are required")
-    if ordered[-1].timestamp - ordered[-2].timestamp != TIMEFRAME_MS:
-        raise ValueError("Twelve Data did not return consecutive 4-hour candles")
-    return ordered[-2]
+    if len(ordered) < 5:
+        raise ValueError("At least five 1-hour candles are required")
+
+    closed_candles = ordered[:-1]
+    latest_closed = closed_candles[-1]
+    latest_time = datetime.fromtimestamp(latest_closed.timestamp / 1000, tz=BANGKOK_TIMEZONE)
+    bucket_start = latest_time.replace(
+        hour=(latest_time.hour // 4) * 4, minute=0, second=0, microsecond=0
+    )
+    bucket_start_ms = int(bucket_start.timestamp() * 1000)
+    bucket = [
+        candle
+        for candle in closed_candles
+        if bucket_start_ms <= candle.timestamp < bucket_start_ms + TIMEFRAME_MS
+    ]
+    expected_timestamps = [bucket_start_ms + offset * ONE_HOUR_MS for offset in range(4)]
+    if [candle.timestamp for candle in bucket] != expected_timestamps:
+        raise ValueError("Twelve Data did not return a complete closed Bangkok 4-hour candle")
+
+    return Candle(
+        timestamp=bucket_start_ms,
+        open=bucket[0].open,
+        high=max(candle.high for candle in bucket),
+        low=min(candle.low for candle in bucket),
+        close=bucket[-1].close,
+        volume=sum(candle.volume for candle in bucket),
+    )
 
 
 def _alert_key(direction: str, level: float) -> str:
@@ -213,7 +241,9 @@ async def run_price_alert(
     owns_market_data = market_data is None
     try:
         repository = repository or MySQLPriceAlertRepository.from_env()
-        market_data = market_data or TwelveDataManager()
+        # Make Twelve Data's intraday candle labels match this worker's
+        # Bangkok-based cron boundaries.
+        market_data = market_data or TwelveDataManager(output_timezone="Asia/Bangkok")
         notifier = notifier if notifier is not None else TelegramNotifier.from_env()
         state_store = state_store or TradingStateStore()
 
@@ -222,8 +252,10 @@ async def run_price_alert(
             logger.info("No eligible XAUUSD price_alert levels for today; no action")
             return True
 
-        candles = await market_data.fetch_ohlcv(MARKET_SYMBOL, TIMEFRAME, limit=2)
-        candle = latest_closed_candle(candles)
+        candles = await market_data.fetch_ohlcv(
+            MARKET_SYMBOL, "1h", limit=PRICE_ALERT_CANDLE_LIMIT
+        )
+        candle = latest_closed_bangkok_4h_candle(candles)
         sent_alerts = _previous_alerts(state_store.get(STATE_KEY), candle.timestamp)
         for key, _level, message in _crossed_alerts(levels, candle):
             if key in sent_alerts:

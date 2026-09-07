@@ -52,7 +52,7 @@ class CronConfigurationTests(unittest.TestCase):
 
         self.assertEqual(len(price_alert_entries), 1)
         entry = price_alert_entries[0]
-        self.assertTrue(entry.startswith("5 3,7,11,15,19,23 * * 1-5"))
+        self.assertTrue(entry.startswith("5 0,4,8,12,16,20 * * 1-5"))
         self.assertIn("/tmp/trade-paxg-price-alert.lock", entry)
 
     def test_exit_profit_job_is_disabled(self):

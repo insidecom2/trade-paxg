@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import requests
@@ -37,6 +38,19 @@ class ExchangeManagerTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "TWELVEDATA_API_KEY"):
                 TwelveDataManager()
+
+    def test_twelvedata_manager_uses_configured_output_timezone(self):
+        payload = {"status": "ok", "values": []}
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = payload
+
+        with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):
+            manager = TwelveDataManager(output_timezone="Asia/Bangkok")
+            with patch("exchange_manager.requests.get", return_value=response) as request_get:
+                self.assertEqual(manager._fetch_sync("XAU/USD", "4h", 2), payload)
+
+        self.assertEqual(request_get.call_args.kwargs["params"]["timezone"], "Asia/Bangkok")
 
     def test_twelvedata_manager_retries_timeout_then_returns_payload(self):
         payload = {"status": "ok", "values": []}
@@ -114,6 +128,21 @@ class ExchangeManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(candles[0].timestamp, candles[1].timestamp)
         self.assertEqual(candles[1].close, 2.5)
         self.assertEqual(candles[0].volume, 0.0)
+
+    async def test_twelvedata_manager_interprets_bangkok_datetimes_correctly(self):
+        payload = {
+            "status": "ok",
+            "values": [
+                {"datetime": "2026-08-29 16:00:00", "open": "1", "high": "2", "low": "0.5", "close": "1.8"},
+            ],
+        }
+        with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):
+            manager = TwelveDataManager(output_timezone="Asia/Bangkok")
+            with patch.object(manager, "_fetch_sync", return_value=payload):
+                candles = await manager.fetch_ohlcv("XAU/USD", "1h", limit=1)
+
+        expected = int(datetime(2026, 8, 29, 9, tzinfo=timezone.utc).timestamp() * 1000)
+        self.assertEqual(candles[0].timestamp, expected)
 
     async def test_twelvedata_manager_raises_on_error_status(self):
         with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):

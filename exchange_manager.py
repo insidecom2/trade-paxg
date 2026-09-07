@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import ccxt.async_support as ccxt
 import requests
@@ -98,10 +99,15 @@ class TwelveDataManager:
     run off the event loop via asyncio.to_thread.
     """
 
-    def __init__(self):
+    def __init__(self, output_timezone: str = "UTC"):
         self.api_key = os.getenv("TWELVEDATA_API_KEY", "").strip()
         if not self.api_key:
             raise ValueError("TWELVEDATA_API_KEY is required when PRICE_SOURCE=twelvedata")
+        try:
+            self.output_timezone = output_timezone
+            self._output_tzinfo = ZoneInfo(output_timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Invalid Twelve Data output timezone: {output_timezone}") from exc
 
     def _fetch_sync(self, symbol: str, timeframe: str, limit: int) -> dict:
         interval = TWELVEDATA_INTERVALS.get(timeframe)
@@ -114,7 +120,7 @@ class TwelveDataManager:
             "symbol": symbol,
             "interval": interval,
             "outputsize": limit,
-            "timezone": "UTC",
+            "timezone": self.output_timezone,
             "apikey": self.api_key,
         }
         for attempt in range(TWELVEDATA_MAX_RETRIES + 1):
@@ -156,12 +162,12 @@ class TwelveDataManager:
             Candle(
                 timestamp=int(
                     datetime.strptime(value["datetime"], "%Y-%m-%d %H:%M:%S")
-                    .replace(tzinfo=timezone.utc)
+                    .replace(tzinfo=self._output_tzinfo)
                     .timestamp()
                     * 1000
                 ) if len(value["datetime"]) > 10 else int(
                     datetime.strptime(value["datetime"], "%Y-%m-%d")
-                    .replace(tzinfo=timezone.utc)
+                    .replace(tzinfo=self._output_tzinfo)
                     .timestamp()
                     * 1000
                 ),
