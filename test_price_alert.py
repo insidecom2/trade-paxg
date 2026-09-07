@@ -8,6 +8,7 @@ from price_alert import (
     PriceAlertLevel,
     STATE_KEY,
     bangkok_day_bounds,
+    latest_closed_bangkok_4h_candle,
     run_price_alert,
 )
 from price_alert import MySQLPriceAlertRepository
@@ -22,12 +23,26 @@ class FakeRepository:
 
 
 class FakeMarketData:
-    def __init__(self, close, high=None, low=None, timestamp=1_728_000_000_000):
+    def __init__(self, close, high=None, low=None):
         high = close if high is None else high
         low = close if low is None else low
+        bucket_start = int(
+            datetime(2026, 9, 4, 20, tzinfo=BANGKOK_TIMEZONE).timestamp() * 1000
+        )
         self.candles = [
-            Candle(timestamp=timestamp - 14_400_000, open=1, high=high, low=low, close=close, volume=0),
-            Candle(timestamp=timestamp, open=1, high=1, low=1, close=1, volume=0),
+            Candle(timestamp=bucket_start - 3_600_000, open=1, high=1, low=1, close=1, volume=0),
+            *[
+                Candle(
+                    timestamp=bucket_start + offset * 3_600_000,
+                    open=1,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=0,
+                )
+                for offset in range(4)
+            ],
+            Candle(timestamp=bucket_start + 14_400_000, open=1, high=1, low=1, close=1, volume=0),
         ]
         self.closed = False
 
@@ -61,6 +76,24 @@ class FakeStateStore:
 
 
 class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
+    def test_latest_closed_candle_is_aggregated_on_bangkok_4h_boundary(self):
+        bucket_start = int(
+            datetime(2026, 9, 4, 20, tzinfo=BANGKOK_TIMEZONE).timestamp() * 1000
+        )
+        candles = [
+            Candle(timestamp=bucket_start - 3_600_000, open=90, high=91, low=89, close=90, volume=1),
+            Candle(timestamp=bucket_start, open=100, high=105, low=99, close=102, volume=2),
+            Candle(timestamp=bucket_start + 3_600_000, open=102, high=110, low=101, close=108, volume=3),
+            Candle(timestamp=bucket_start + 7_200_000, open=108, high=109, low=95, close=98, volume=4),
+            Candle(timestamp=bucket_start + 10_800_000, open=98, high=103, low=97, close=101, volume=5),
+            Candle(timestamp=bucket_start + 14_400_000, open=101, high=102, low=100, close=101, volume=6),
+        ]
+
+        candle = latest_closed_bangkok_4h_candle(candles)
+
+        self.assertEqual(candle.timestamp, bucket_start)
+        self.assertEqual((candle.open, candle.high, candle.low, candle.close, candle.volume), (100, 110, 95, 101, 14))
+
     async def test_empty_lookup_does_nothing(self):
         repository = FakeRepository([])
         notifier = FakeNotifier()
