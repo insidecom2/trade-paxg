@@ -30,10 +30,10 @@ class CronConfigurationTests(unittest.TestCase):
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        # Active today: MySQL price alert, DAILY_OUTLOOK, SETUP_DETECTION,
-        # SETUP_CONFIRMATION, FINAL_SESSION_DECISION. Strategy, exit-profit,
-        # liquidity-sweep, and SESSION_PREPARATION remain disabled.
-        self.assertEqual(len(entries), 5)
+        # Active today: MySQL price alert, Bollinger wick alert, DAILY_OUTLOOK,
+        # SETUP_DETECTION, SETUP_CONFIRMATION, FINAL_SESSION_DECISION. Strategy,
+        # exit-profit, liquidity-sweep, and SESSION_PREPARATION remain disabled.
+        self.assertEqual(len(entries), 6)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
@@ -52,8 +52,21 @@ class CronConfigurationTests(unittest.TestCase):
 
         self.assertEqual(len(price_alert_entries), 1)
         entry = price_alert_entries[0]
-        self.assertTrue(entry.startswith("5 0,4,8,12,16,20 * * 1-5"))
+        self.assertTrue(entry.startswith("2 0,4,8,12,16,20 * * 1-5"))
         self.assertIn("/tmp/trade-paxg-price-alert.lock", entry)
+
+    def test_bollinger_wick_alert_runs_every_five_minutes_after_close(self):
+        entries = scheduled_entries()
+        alert_entries = [e for e in entries if "run_bollinger_wick_alert_job.sh" in e]
+
+        self.assertEqual(len(alert_entries), 1)
+        entry = alert_entries[0]
+        self.assertTrue(entry.startswith("2-59/5 * * * 1-5"))
+        self.assertIn("/tmp/trade-paxg-bollinger-wick-alert.lock", entry)
+
+        launcher = (ROOT / "run_bollinger_wick_alert_job.sh").read_text(encoding="utf-8")
+        self.assertIn("bollinger_wick_alert.py", launcher)
+        self.assertIn("TWELVEDATA_API_KEY", launcher)
 
     def test_exit_profit_job_is_disabled(self):
         entries = scheduled_entries()

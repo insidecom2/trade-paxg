@@ -16,6 +16,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Bangkok, Mon-Fri. This schedule is enabled independently of strategy alerts.
 2 0,4,8,12,16,20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-price-alert.lock /app/run_price_alert_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
 
+# XAU/USD 5m Bollinger wick alert. The worker excludes a still-open candle,
+# sends BUY/SELL independently, and uses its own lock and state namespace.
+2-59/5 * * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-bollinger-wick-alert.lock /app/run_bollinger_wick_alert_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+
 # Liquidity sweep watch on 1h, restricted to 12:00-21:00 Bangkok (CRON_TZ above), Mon-Fri.
 # Liquidity-sweep notifications are disabled. Run /app/run_liquidity_sweep_job.sh manually when needed.
 # 0 12-20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-liquidity-sweep.lock /app/run_liquidity_sweep_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
