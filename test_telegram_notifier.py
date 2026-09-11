@@ -65,6 +65,22 @@ class TelegramNotifierTests(unittest.IsolatedAsyncioTestCase):
 
         sleep.assert_awaited_once_with(0.25)
 
+    async def test_default_configuration_attempts_three_transient_deliveries(self):
+        FakeSession.outcomes = [
+            FakeResponse(503, '{"ok":false}'),
+            FakeResponse(503, '{"ok":false}'),
+            FakeResponse(503, '{"ok":false}'),
+        ]
+        notifier = TelegramNotifier("token", "chat", retry_delay=0)
+
+        with patch("telegram_notifier.aiohttp.ClientSession", FakeSession), patch(
+            "telegram_notifier.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep:
+            self.assertFalse(await notifier.send_message("hello"))
+
+        self.assertEqual(FakeSession.outcomes, [])
+        self.assertEqual(sleep.await_count, 2)
+
     async def test_does_not_retry_non_retryable_http_error(self):
         FakeSession.outcomes = [FakeResponse(401, '{"description":"Unauthorized"}')]
         notifier = TelegramNotifier("token", "chat", max_retries=2, retry_delay=0)

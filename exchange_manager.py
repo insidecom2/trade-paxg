@@ -85,7 +85,7 @@ class BinanceManager:
 
 
 TWELVEDATA_API_URL = "https://api.twelvedata.com/time_series"
-TWELVEDATA_INTERVALS = {"1h": "1h", "4h": "4h", "1d": "1day"}
+TWELVEDATA_INTERVALS = {"5m": "5min", "1h": "1h", "4h": "4h", "1d": "1day"}
 TWELVEDATA_TIMEOUT = (5, 12)
 TWELVEDATA_MAX_RETRIES = 2
 TWELVEDATA_RETRY_DELAY_SECONDS = 1.0
@@ -113,7 +113,7 @@ class TwelveDataManager:
         interval = TWELVEDATA_INTERVALS.get(timeframe)
         if interval is None:
             raise ValueError(
-                "Twelve Data source supports only 1h, 4h, and 1d timeframes"
+                "Twelve Data source supports only 5m, 1h, 4h, and 1d timeframes"
             )
 
         params = {

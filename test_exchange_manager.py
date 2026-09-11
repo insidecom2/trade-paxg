@@ -52,6 +52,19 @@ class ExchangeManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(request_get.call_args.kwargs["params"]["timezone"], "Asia/Bangkok")
 
+    def test_twelvedata_manager_maps_5m_to_the_provider_interval(self):
+        payload = {"status": "ok", "values": []}
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = payload
+
+        with patch.dict(os.environ, {"TWELVEDATA_API_KEY": "key"}, clear=True):
+            manager = TwelveDataManager()
+            with patch("exchange_manager.requests.get", return_value=response) as request_get:
+                self.assertEqual(manager._fetch_sync("XAU/USD", "5m", 21), payload)
+
+        self.assertEqual(request_get.call_args.kwargs["params"]["interval"], "5min")
+
     def test_twelvedata_manager_retries_timeout_then_returns_payload(self):
         payload = {"status": "ok", "values": []}
         response = Mock()
