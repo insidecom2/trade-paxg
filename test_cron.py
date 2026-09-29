@@ -30,10 +30,10 @@ class CronConfigurationTests(unittest.TestCase):
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        # Active today: MySQL price alert, Bollinger wick alert, DAILY_OUTLOOK,
-        # SETUP_DETECTION, SETUP_CONFIRMATION, FINAL_SESSION_DECISION. Strategy,
-        # exit-profit, liquidity-sweep, and SESSION_PREPARATION remain disabled.
-        self.assertEqual(len(entries), 6)
+        # Active today: DAILY_OUTLOOK and SETUP_DETECTION. Strategy, price
+        # alerts, exit-profit, liquidity-sweep, and the remaining session
+        # stages are deliberately disabled.
+        self.assertEqual(len(entries), 2)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
@@ -46,23 +46,17 @@ class CronConfigurationTests(unittest.TestCase):
             "4h strategy notifications must not have an active cron entry",
         )
 
-    def test_mysql_price_alert_runs_after_each_4h_close(self):
+    def test_mysql_price_alert_is_disabled(self):
         entries = scheduled_entries()
         price_alert_entries = [e for e in entries if "run_price_alert_job.sh" in e]
 
-        self.assertEqual(len(price_alert_entries), 1)
-        entry = price_alert_entries[0]
-        self.assertTrue(entry.startswith("2 0,4,8,12,16,20 * * 1-5"))
-        self.assertIn("/tmp/trade-paxg-price-alert.lock", entry)
+        self.assertEqual(price_alert_entries, [])
 
-    def test_bollinger_wick_alert_runs_every_five_minutes_after_close(self):
+    def test_bollinger_wick_alert_is_disabled(self):
         entries = scheduled_entries()
         alert_entries = [e for e in entries if "run_bollinger_wick_alert_job.sh" in e]
 
-        self.assertEqual(len(alert_entries), 1)
-        entry = alert_entries[0]
-        self.assertTrue(entry.startswith("2-59/5 * * * 1-5"))
-        self.assertIn("/tmp/trade-paxg-bollinger-wick-alert.lock", entry)
+        self.assertEqual(alert_entries, [])
 
         launcher = (ROOT / "run_bollinger_wick_alert_job.sh").read_text(encoding="utf-8")
         self.assertIn("bollinger_wick_alert.py", launcher)
@@ -105,10 +99,6 @@ class CronConfigurationTests(unittest.TestCase):
         entries = scheduled_entries()
         expected = {
             "setup_detection": ("0 19 * * 1-5", "/tmp/trade-paxg-ai-setup-detection.lock"),
-            "setup_confirmation": ("0 20 * * 1-5", "/tmp/trade-paxg-ai-setup-confirmation.lock"),
-            "final_session_decision": (
-                "0 21 * * 1-5", "/tmp/trade-paxg-ai-final-session-decision.lock",
-            ),
         }
         for stage, (expected_schedule, expected_lock) in expected.items():
             with self.subTest(stage=stage):
@@ -120,6 +110,16 @@ class CronConfigurationTests(unittest.TestCase):
                 entry = stage_entries[0]
                 self.assertTrue(entry.startswith(expected_schedule))
                 self.assertIn(expected_lock, entry)
+
+    def test_later_ai_session_stages_are_disabled(self):
+        entries = scheduled_entries()
+
+        for stage in ("setup_confirmation", "final_session_decision"):
+            with self.subTest(stage=stage):
+                self.assertFalse(
+                    any(f"run_ai_session_stage_job.sh {stage}" in entry for entry in entries),
+                    f"{stage} is deliberately disabled",
+                )
 
     def test_launcher_forwards_an_explicit_timeframe(self):
         launcher = CRON_LAUNCHER.read_text(encoding="utf-8")
