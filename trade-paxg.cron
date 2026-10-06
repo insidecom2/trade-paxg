@@ -14,7 +14,7 @@ PATH=/usr/local/bin:/usr/bin:/bin
 
 # MySQL XAU/USD level alert. Run five minutes after 4H candle boundaries in
 # Bangkok, Mon-Fri. This schedule is enabled independently of strategy alerts.
-# 2 0,4,8,12,16,20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-price-alert.lock /app/run_price_alert_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
+2 0,4,8,12,16,20 * * 1-5 root cd /app && /usr/bin/flock -n /tmp/trade-paxg-price-alert.lock /app/run_price_alert_job.sh >> /proc/1/fd/1 2>> /proc/1/fd/2
 
 # XAU/USD 5m Bollinger wick alert. The worker excludes a still-open candle,
 # sends BUY/SELL independently, and uses its own lock and state namespace.
