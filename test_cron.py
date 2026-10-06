@@ -30,10 +30,10 @@ class CronConfigurationTests(unittest.TestCase):
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        # Active today: DAILY_OUTLOOK and SETUP_DETECTION. Strategy, price
-        # alerts, exit-profit, liquidity-sweep, and the remaining session
-        # stages are deliberately disabled.
-        self.assertEqual(len(entries), 2)
+        # Active today: the MySQL price alert, DAILY_OUTLOOK, and
+        # SETUP_DETECTION. Strategy, exit-profit, liquidity-sweep, and the
+        # remaining session stages are deliberately disabled.
+        self.assertEqual(len(entries), 3)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
@@ -46,11 +46,14 @@ class CronConfigurationTests(unittest.TestCase):
             "4h strategy notifications must not have an active cron entry",
         )
 
-    def test_mysql_price_alert_is_disabled(self):
+    def test_mysql_price_alert_is_scheduled(self):
         entries = scheduled_entries()
         price_alert_entries = [e for e in entries if "run_price_alert_job.sh" in e]
 
-        self.assertEqual(price_alert_entries, [])
+        self.assertEqual(len(price_alert_entries), 1)
+        entry = price_alert_entries[0]
+        self.assertTrue(entry.startswith("2 0,4,8,12,16,20 * * 1-5"))
+        self.assertIn("/tmp/trade-paxg-price-alert.lock", entry)
 
     def test_bollinger_wick_alert_is_disabled(self):
         entries = scheduled_entries()
