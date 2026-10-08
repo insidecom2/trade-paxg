@@ -5,16 +5,26 @@ on:
 
 jobs:
   test-ssh:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
+      - name: Validate SSH Secrets
+        env:
+          HOST: ${{ secrets.VM_HOST }}
+          USER: ${{ secrets.VM_USER }}
+          KEY: ${{ secrets.VM_SSH_KEY }}
+        run: |
+          test -n "$HOST" || { echo "VM_HOST missing"; exit 1; }
+          test -n "$USER" || { echo "VM_USER missing"; exit 1; }
+          test -n "$KEY" || { echo "VM_SSH_KEY missing"; exit 1; }
+
       - name: Test SSH Connection
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.VM_HOST }}
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          port: ${{ secrets.VM_PORT }}
+          port: ${{ secrets.VM_PORT || '22' }}
           script: |
             echo "SSH connection successful!"
             whoami
