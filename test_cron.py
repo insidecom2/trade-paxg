@@ -30,10 +30,10 @@ class CronConfigurationTests(unittest.TestCase):
     def test_each_job_has_its_own_nonblocking_lock(self):
         entries = scheduled_entries()
 
-        # Active today: the MySQL price alert, DAILY_OUTLOOK, and
-        # SETUP_DETECTION. Strategy, exit-profit, liquidity-sweep, and the
-        # remaining session stages are deliberately disabled.
-        self.assertEqual(len(entries), 3)
+        # Active today: the MySQL price alert, Ausiris gold outlook,
+        # DAILY_OUTLOOK, and SETUP_DETECTION. Strategy, exit-profit,
+        # liquidity-sweep, and the remaining session stages are disabled.
+        self.assertEqual(len(entries), 4)
         for entry in entries:
             with self.subTest(entry=entry):
                 self.assertIn(LOCK_COMMAND, entry)
@@ -89,6 +89,17 @@ class CronConfigurationTests(unittest.TestCase):
         entry = daily_outlook_entries[0]
         self.assertTrue(entry.startswith("0 8 * * 1-5"))
         self.assertIn("/tmp/trade-paxg-ai-daily-outlook.lock", entry)
+
+    def test_ausiris_gold_outlook_job_is_scheduled_at_10_00(self):
+        entries = scheduled_entries()
+        outlook_entries = [
+            entry for entry in entries if "run_ausiris_gold_outlook_job.sh" in entry
+        ]
+
+        self.assertEqual(len(outlook_entries), 1)
+        entry = outlook_entries[0]
+        self.assertTrue(entry.startswith("0 10 * * 1-5"))
+        self.assertIn("/tmp/trade-paxg-ausiris-gold-outlook.lock", entry)
 
     def test_ai_session_preparation_job_is_disabled(self):
         entries = scheduled_entries()
