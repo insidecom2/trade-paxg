@@ -211,6 +211,14 @@ analysis, same as the FRED and OpenAI paths.
 A real forecast-*and*-actual-capable provider (paid) and hardcoding the publicly-known
 FOMC meeting schedule specifically are both still out of scope for this increment.
 
+**Ausiris gold outlook** (`ausiris_gold_outlook.py`) is a separate text-forwarding
+worker: it fetches the public Ausiris research page, extracts the
+`parsys-container parsys` section containing “มุมมองราคาทอง”, and sends its visible
+text to Telegram at 10:00 Bangkok time, Monday–Friday. It uses Python's
+standard-library `HTMLParser`, the existing `requests` dependency, and the shared
+`TelegramNotifier`. Missing content or failed fetch/delivery exits unsuccessfully;
+oversized text is split into Telegram-safe chunks without dropping characters.
+
 Gated by `AI_ANALYSIS_ENABLED` (default `false`) and requires `OPENAI_API_KEY`; either
 missing causes a clean skip (`ai.analysis.skipped`), not a crash — this pipeline can
 never affect the strategy, exit-profit, or liquidity-sweep pipelines. A schema-invalid or
