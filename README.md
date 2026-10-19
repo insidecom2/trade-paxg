@@ -55,6 +55,15 @@ to call this a validated edge — the notifications are informational only. Re-r
 backtest after any parameter change. Treat each alert as a
 prompt to look at the chart yourself, not a signal to act on automatically.
 
+At 10:00 Bangkok time, Monday through Friday, the cron container fetches the
+“มุมมองราคาทอง” text from Ausiris and sends it to the configured Telegram chat.
+The worker uses the existing `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` settings.
+Run it manually with:
+
+```bash
+python ausiris_gold_outlook.py
+```
+
 Market data for both strategy analysis and exit-profit checks can be switched
 between Binance and Twelve Data with `PRICE_SOURCE`. Binance is the default.
 For Twelve Data, set `PRICE_SOURCE=twelvedata` and `TWELVEDATA_API_KEY`. The
